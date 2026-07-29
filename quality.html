@@ -298,7 +298,9 @@ async function loadQuality() {
   const res = await fetch('/api/quality', { cache: 'no-store' });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || ('HTTP ' + res.status));
+    const err = new Error(body.error || ('HTTP ' + res.status));
+    err.needSetup = Boolean(body.needSetup);   // 「没配账号」和「连不上」是两回事
+    throw err;
   }
   return res.json();
 }
@@ -665,8 +667,20 @@ async function load() {
     lastOkTime = Date.now();
     document.getElementById('bannerErr').classList.remove('show');
   } catch (err) {
-    failCount++;
     console.error('获取质量数据失败:', err);
+
+    // 还没配 OA 账号 —— 这不是故障，是没装完。说清楚该去哪，别报成连接异常
+    if (err.needSetup) {
+      failCount = 0;
+      render({ ...DEMO, range: '示例数据（尚未配置 OA 账号）' });
+      const b = document.getElementById('bannerErr');
+      b.textContent = '◆ 还没配置 OA 账号，下面显示的是示例数据。'
+        + '请在电脑上打开本机的 /setup 页面登录一次（只需一次，之后大屏一直用这个账号取数）。';
+      b.classList.add('show');
+      return;
+    }
+
+    failCount++;
     if (lastOkTime === null && failCount === 1) {
       // 没有后端（比如直接双击打开文件）→ 用示例数据把版面显示出来
       render(DEMO);

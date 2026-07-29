@@ -6,8 +6,12 @@
  *     node server.js --probe    只拉一天数据，打印真实字段名（首次接入必跑）
  *
  * 对外提供：
- *   GET /             看板页面（quality.html）
- *   GET /api/quality  质量数据（JSON）
+ *   GET  /             看板页面（quality.html）
+ *   GET  /setup        OA 账号登录页（一次性配置用）
+ *   GET  /api/quality  质量数据（JSON）
+ *   GET  /api/config   当前配置状态（只回账号名，绝不回密码）
+ *   POST /api/login    验证并保存 OA 账号
+ *   POST /api/logout   清除已保存的 OA 账号
  *
  * 数据来源（口径由需求方指定）：
  *   分子 ← 接口 4「检验异常录入列表」ProductionInspectionList  的不良数
@@ -26,34 +30,53 @@ const path = require('path');
 
 const PORT = 3200;                      // 3000 生产看板 / 3100 周报 / 3200 质量趋势
 const PROBE = process.argv.includes('--probe');
+const CONFIG_PATH = path.join(__dirname, 'config.json');
 
 // ═══════════════════════════════════════════════════════════════
-// 配置：OA 账号密码不进版本库
-// 复制 config.example.json 为 config.json 再填
+// 配置
+//
+// OA 账号密码明文存在 config.json 里，该文件已在 .gitignore。
+// 不做加密：密钥只能存在同一台机器上，加了等于没加，反而给人一种
+// 安全的错觉。真正的防线是这台服务器本身的登录权限。
+//
+// 服务在「没配账号」时照常启动 —— 直接退出的话，服务器重启后大屏
+// 就永远起不来了，和「无人值守」的要求冲突。没账号时看板会显示一条
+// 明确提示，让人去 /setup 配。
 // ═══════════════════════════════════════════════════════════════
-let cfg;
-try {
-  cfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
-} catch (err) {
-  console.error('读不到 config.json —— 先复制 config.example.json 为 config.json 并填写 OA 账号');
-  console.error('  ' + err.message);
-  process.exit(1);
+const DEFAULTS = {
+  baseUrl:   'http://192.168.0.249/RibaoOA/api/OAWebApi',
+  userCode:  '',
+  password:  '',
+  days:      14,        // 趋势图显示最近多少天
+  target:    98.5,      // 良品率目标线
+  minSample: 200,       // 当日检验数低于此值 → 标为样本不足
+  topGroups: 6,         // 小倍数显示前几个产品
+  refreshMs: 300000,    // 向 OA 取数的间隔，默认 5 分钟
+};
+
+function loadConfig() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    return { ...DEFAULTS, ...raw };
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.warn('config.json 读取失败，用默认值：', err.message);
+    return { ...DEFAULTS };
+  }
 }
 
-const {
-  baseUrl   = 'http://192.168.0.249/RibaoOA/api/OAWebApi',
-  userCode, password,
-  days      = 14,       // 趋势图显示最近多少天
-  target    = 98.5,     // 良品率目标线
-  minSample = 200,      // 当日检验数低于此值 → 标为样本不足
-  topGroups = 6,        // 小倍数显示前几个产品
-  refreshMs = 300000,   // 向 OA 取数的间隔，默认 5 分钟
-} = cfg;
+let cfg = loadConfig();
 
-if (!userCode || !password) {
-  console.error('config.json 里 userCode / password 还没填');
-  process.exit(1);
+// 写回时保留文件里已有的其它设置（days / target / 注释字段等），只覆盖传进来的键
+function saveConfig(patch) {
+  let raw = {};
+  try { raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch { /* 首次创建 */ }
+  const next = { ...raw, ...patch };
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + '\n', 'utf8');
+  cfg = { ...DEFAULTS, ...next };
+  cache = null; cacheAt = 0;        // 换了账号，旧缓存作废
 }
+
+const configured = () => Boolean(cfg.userCode && cfg.password);
 
 // ═══════════════════════════════════════════════════════════════
 // 字段名解析
@@ -87,10 +110,8 @@ function num(v) {
 // 检验日期可能是 '2026-07-29'、'2026/7/29'、'2026-07-29T00:00:00' —— 统一成 yyyy-MM-dd
 function toDay(v) {
   if (!v) return null;
-  const s = String(v).trim();
-  const m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-  if (!m) return null;
-  return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  const m = String(v).trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : null;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -100,13 +121,22 @@ function ymd(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-async function callOA(endpoint, startDate, endDate) {
-  const qs = new URLSearchParams({ startDate, endDate, userCode, password });
-  const url = `${baseUrl}/${endpoint}?${qs}`;
-  // 密码在 query string 里（接口就是这么设计的），所以日志里绝不能打完整 URL
-  const safe = `${baseUrl}/${endpoint}?startDate=${startDate}&endDate=${endDate}&userCode=***&password=***`;
+async function callOA(endpoint, startDate, endDate, creds = cfg) {
+  const qs = new URLSearchParams({
+    startDate, endDate,
+    userCode: creds.userCode,
+    password: creds.password,
+  });
+  const url = `${cfg.baseUrl}/${endpoint}?${qs}`;
+  // 密码在 query string 里（接口就是这么设计的），所以日志和报错里绝不能出现完整 URL
+  const safe = `${cfg.baseUrl}/${endpoint}?startDate=${startDate}&endDate=${endDate}&userCode=***&password=***`;
 
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  let res;
+  try {
+    res = await fetch(url, { headers: { Accept: 'application/json' } });
+  } catch (err) {
+    throw new Error(`连不上 OA（${safe}）：${err.message}`);
+  }
   if (!res.ok) throw new Error(`${endpoint} HTTP ${res.status} — ${safe}`);
 
   const body = await res.json();
@@ -139,9 +169,14 @@ function aggregate(daily, abnormal, allDays) {
 
   const touchProduct = (code, name) => {
     if (!byProduct.has(code)) {
-      byProduct.set(code, { code, name: name || code, qty: 0, defect: 0, byDay: new Map(allDays.map(d => [d, { qty: 0, defect: 0 }])) });
+      byProduct.set(code, {
+        code, name: name || code, qty: 0, defect: 0,
+        byDay: new Map(allDays.map(d => [d, { qty: 0, defect: 0 }])),
+      });
     }
-    return byProduct.get(code);
+    const p = byProduct.get(code);
+    if (name && p.name === p.code) p.name = name;
+    return p;
   };
 
   // 分母：接口 5 检验日报
@@ -166,7 +201,7 @@ function aggregate(daily, abnormal, allDays) {
     byDay.get(day).defect += def;
 
     const code = String(pick(row, FIELDS.product) ?? '未标注');
-    const p = touchProduct(code, undefined);
+    const p = touchProduct(code, pick(row, FIELDS.productName));
     p.defect += def;
     p.byDay.get(day).defect += def;
   }
@@ -176,12 +211,12 @@ function aggregate(daily, abnormal, allDays) {
   const series = allDays.map(day => {
     const d = byDay.get(day);
     return {
-      t: day.slice(5),                     // 轴标签只显示 MM-DD
+      t: day.slice(5),                   // 轴标签只显示 MM-DD
       date: day,
       output: d.qty,
       defect: d.defect,
       rate: rateOf(d.qty, d.defect),
-      crossRate: rateOf(d.qty, d.crossDefect),   // 接口 5 同源口径，用于对照
+      crossRate: rateOf(d.qty, d.crossDefect),   // 接口 5 同源口径，仅用于对照
     };
   });
 
@@ -189,7 +224,7 @@ function aggregate(daily, abnormal, allDays) {
   const groups = [...byProduct.values()]
     .filter(p => p.qty > 0)
     .sort((a, b) => b.qty - a.qty)
-    .slice(0, topGroups)
+    .slice(0, cfg.topGroups)
     .map(p => ({
       name: p.name === p.code ? p.code : `${p.code} · ${p.name}`,
       spark: allDays.map(day => {
@@ -230,7 +265,7 @@ let cacheAt = 0;
 let inflight = null;
 
 async function fetchQuality() {
-  const { startDate, endDate, allDays } = buildRange(days);
+  const { startDate, endDate, allDays } = buildRange(cfg.days);
   const [daily, abnormal] = await Promise.all([
     callOA('InspectionDailyReportList', startDate, endDate),   // 分母
     callOA('ProductionInspectionList', startDate, endDate),    // 分子
@@ -249,7 +284,8 @@ async function fetchQuality() {
   return {
     updatedAt: new Date().toISOString(),
     range: `${startDate} ~ ${endDate}`,
-    target, minSample,
+    target: cfg.target,
+    minSample: cfg.minSample,
     summary: {
       rate: latest ? latest.rate : null,
       defect: latest ? latest.defect : 0,
@@ -268,7 +304,7 @@ async function fetchQuality() {
 }
 
 async function readQuality() {
-  if (cache && Date.now() - cacheAt < refreshMs) return cache;
+  if (cache && Date.now() - cacheAt < cfg.refreshMs) return cache;
   if (inflight) return inflight;               // 并发请求合并成一次，别把 OA 打穿
   inflight = fetchQuality()
     .then(data => { cache = data; cacheAt = Date.now(); return data; })
@@ -277,12 +313,33 @@ async function readQuality() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 验证 OA 账号
+//
+// 没有专门的登录接口（鉴权方式就是每次请求带 userCode + password），
+// 所以拿真实接口试拉一天数据来验：不抛错就算通过。
+//
+// 一个诚实的说明：如果账号错了，OA 返回的是空数组而不是错误码，
+// 那这里是分辨不出来的 —— 会当成「通过，只是那天没数据」。
+// 所以验证结果里会带上拿到多少条记录，让人自己看一眼。
+// ═══════════════════════════════════════════════════════════════
+async function verifyCredentials(userCode, password) {
+  const today = ymd(new Date());
+  const from = ymd(new Date(Date.now() - 6 * 864e5));
+  const rows = await callOA('InspectionDailyReportList', from, today, { userCode, password });
+  return { rows: rows.length, from, to: today };
+}
+
+// ═══════════════════════════════════════════════════════════════
 // --probe：把真实字段名打出来
 // ═══════════════════════════════════════════════════════════════
 async function probe() {
+  if (!configured()) {
+    console.error('还没配 OA 账号。先启动服务 `node server.js`，浏览器打开 http://localhost:' + PORT + '/setup 登录一次。');
+    process.exit(1);
+  }
   const today = ymd(new Date());
   const from = ymd(new Date(Date.now() - 6 * 864e5));
-  console.log(`探测区间 ${from} ~ ${today}\n`);
+  console.log(`探测区间 ${from} ~ ${today}（账号 ${cfg.userCode}）\n`);
 
   for (const [label, ep] of [['接口5 检验日报列表', 'InspectionDailyReportList'],
                              ['接口4 检验异常录入列表', 'ProductionInspectionList']]) {
@@ -304,11 +361,116 @@ async function probe() {
 // ═══════════════════════════════════════════════════════════════
 // HTTP 服务
 // ═══════════════════════════════════════════════════════════════
+function sendJSON(res, code, obj) {
+  res.writeHead(code, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  res.end(JSON.stringify(obj));
+}
+
+function sendFile(res, file, type) {
+  fs.readFile(path.join(__dirname, file), (err, data) => {
+    if (err) {
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(`500 找不到 ${file}`);
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': type });
+    res.end(data);
+  });
+}
+
+function readBody(req, limit = 4096) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    req.on('data', chunk => {
+      raw += chunk;
+      if (raw.length > limit) { reject(new Error('请求体过大')); req.destroy(); }
+    });
+    req.on('end', () => {
+      try { resolve(raw ? JSON.parse(raw) : {}); }
+      catch { reject(new Error('请求体不是合法 JSON')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function handleLogin(req, res) {
+  let body;
+  try { body = await readBody(req); }
+  catch (err) { return sendJSON(res, 400, { error: err.message }); }
+
+  const userCode = String(body.userCode || '').trim();
+  const password = String(body.password || '');
+  if (!userCode || !password) {
+    return sendJSON(res, 400, { error: '账号和密码都要填' });
+  }
+
+  // 已经配过账号了，改账号必须先验证当前密码 ——
+  // 否则任何能访问这个端口的人都能把服务账号换掉
+  if (configured() && body.currentPassword !== cfg.password) {
+    return sendJSON(res, 403, { error: '已配置账号。要更换请先填写当前密码。' });
+  }
+
+  try {
+    const check = await verifyCredentials(userCode, password);
+    saveConfig({ userCode, password });
+    console.log(`[${new Date().toLocaleTimeString('zh-CN')}] OA 账号已保存：${userCode}`);
+    sendJSON(res, 200, {
+      ok: true,
+      userCode,
+      rows: check.rows,
+      note: check.rows === 0
+        ? `连通了，但 ${check.from} ~ ${check.to} 一条记录都没有。可能是这几天确实没检验，也可能是账号没有该数据的权限——请自己确认一下。`
+        : `连通正常，最近 7 天拿到 ${check.rows} 条检验日报记录。`,
+    });
+  } catch (err) {
+    console.error('OA 账号验证失败:', err.message);
+    sendJSON(res, 401, { error: err.message });
+  }
+}
+
+async function handleLogout(req, res) {
+  let body;
+  try { body = await readBody(req); }
+  catch (err) { return sendJSON(res, 400, { error: err.message }); }
+
+  if (configured() && body.currentPassword !== cfg.password) {
+    return sendJSON(res, 403, { error: '要清除账号，请先填写当前密码。' });
+  }
+  saveConfig({ userCode: '', password: '' });
+  console.log(`[${new Date().toLocaleTimeString('zh-CN')}] OA 账号已清除`);
+  sendJSON(res, 200, { ok: true });
+}
+
 function serve() {
   const server = http.createServer(async (req, res) => {
-    console.log(`[${new Date().toLocaleTimeString('zh-CN')}] ${req.method} ${req.url}`);
+    const url = req.url.split('?')[0];
+    console.log(`[${new Date().toLocaleTimeString('zh-CN')}] ${req.method} ${url}`);
 
-    if (req.url.startsWith('/api/quality')) {
+    if (req.method === 'POST' && url === '/api/login')  return handleLogin(req, res);
+    if (req.method === 'POST' && url === '/api/logout') return handleLogout(req, res);
+
+    // 只回账号名和配置状态，密码绝不出服务端
+    if (url === '/api/config') {
+      return sendJSON(res, 200, {
+        configured: configured(),
+        userCode: cfg.userCode || '',
+        baseUrl: cfg.baseUrl,
+        days: cfg.days,
+        target: cfg.target,
+      });
+    }
+
+    if (url === '/api/quality') {
+      if (!configured()) {
+        return sendJSON(res, 503, {
+          error: '还没配置 OA 账号',
+          needSetup: true,
+          setupUrl: '/setup',
+        });
+      }
       try {
         const data = await readQuality();
         res.writeHead(200, {
@@ -319,23 +481,16 @@ function serve() {
         res.end(JSON.stringify(data));
       } catch (err) {
         console.error('取数失败:', err.message);
-        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: err.message }));
+        sendJSON(res, 502, { error: err.message });
       }
       return;
     }
 
-    if (req.url === '/' || req.url === '/quality.html') {
-      fs.readFile(path.join(__dirname, 'quality.html'), (err, data) => {
-        if (err) {
-          res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-          res.end('500 找不到 quality.html');
-          return;
-        }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(data);
-      });
-      return;
+    if (url === '/setup' || url === '/setup.html') {
+      return sendFile(res, 'setup.html', 'text/html; charset=utf-8');
+    }
+    if (url === '/' || url === '/quality.html') {
+      return sendFile(res, 'quality.html', 'text/html; charset=utf-8');
     }
 
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -343,14 +498,20 @@ function serve() {
   });
 
   server.listen(PORT, () => {
-    console.log('─'.repeat(52));
+    console.log('─'.repeat(56));
     console.log('  质量趋势图已启动');
     console.log(`  看板页面：http://localhost:${PORT}`);
     console.log(`  数据接口：http://localhost:${PORT}/api/quality`);
-    console.log(`  数据来源：分子 ProductionInspectionList / 分母 InspectionDailyReportList`);
-    console.log(`  取数间隔：${refreshMs / 1000} 秒（大屏轮询走缓存，不直接压 OA）`);
+    if (configured()) {
+      console.log(`  OA 账号：${cfg.userCode}（已配置）`);
+      console.log(`  取数间隔：${cfg.refreshMs / 1000} 秒（大屏轮询走缓存，不直接压 OA）`);
+    } else {
+      console.log('');
+      console.log('  ⚠ 还没配 OA 账号，看板暂时取不到数。');
+      console.log(`  请打开 http://localhost:${PORT}/setup 登录一次（只需一次）。`);
+    }
     console.log('  按 Ctrl+C 停止');
-    console.log('─'.repeat(52));
+    console.log('─'.repeat(56));
   });
 }
 

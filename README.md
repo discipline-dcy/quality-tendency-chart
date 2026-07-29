@@ -10,10 +10,20 @@
 连真实数据：
 
 ```bash
-cp config.example.json config.json   # 填 OA 账号密码
-node server.js --probe               # 先在厂内网跑一次，打印接口真实字段名
-node server.js                       # 浏览器打开 http://localhost:3200
+node server.js       # 没配账号也能启动
 ```
+
+然后在**电脑上**打开 <http://localhost:3200/setup>，输一次 OA 账号密码。
+服务端会拿真实接口试拉一次数据来验证，通过后存进 `config.json`。
+
+**只需要配这一次。** 之后车间大屏一直用这个账号取数，不需要登录——
+大屏是无人值守的 kiosk，没键盘也没人操作，它自己没法登录。
+
+配好后跑一次 `node server.js --probe`，确认接口返回的真实字段名（见下文）。
+
+> 服务在没配账号时**照常启动**，不会退出。直接退出的话服务器重启后大屏
+> 就永远起不来了，和「无人值守」的要求冲突。没账号时看板会显示示例数据
+> 并挂一条提示，写明去哪配。
 
 零依赖，只用 Node 内置模块，不需要 `npm install`。图表全部是手写 SVG，
 没有引入 ECharts 之类的图表库——理由和主项目不引前端框架一样：一个 SVG
@@ -43,12 +53,30 @@ node server.js                       # 浏览器打开 http://localhost:3200
 ```
 quality-tendency-chart/
 ├── quality.html          看板页面：KPI + 趋势图 + 小倍数 + 表格视图
+├── setup.html            OA 账号配置页（一次性，给运维用）
 ├── server.js             后端：拉两个 OA 接口、聚合、/api/quality
-├── config.example.json   配置模板（config.json 含密码，不进版本库）
+├── config.example.json   可调参数说明（config.json 含密码，不进版本库）
 ├── docs/设计方案.md       完整设计说明与待确认口径
 ├── .gitignore
 └── README.md             本文件
 ```
+
+## OA 账号怎么存的
+
+明文存在服务器的 `config.json` 里，该文件已在 `.gitignore`。
+
+**不做加密。** 这个接口本身就是把密码放在 URL query string 里传的，
+而且加密的密钥还得放在同一台机器上——加了等于没加，只会给人一种安全的错觉。
+真正的防线是这台服务器的登录权限，请确认只有运维能登上去。
+
+两点保护是有的：
+
+- 密码**绝不回传浏览器**。`/api/config` 只回账号名和配置状态
+- 账号配好之后，**更换或清除都必须先验证当前密码**，
+  否则任何能访问这个端口的人都能把服务账号换掉
+
+建议单独申请一个**只读的服务账号**，不要用个人账号——个人账号改密码之后
+看板就断了，而且 OA 日志里分不清是谁在取数。
 
 ## 这张图给谁看
 
