@@ -500,7 +500,10 @@ function renderSparks(data) {
 
   groups.forEach(g => {
     const vals = g.spark.filter(v => typeof v === 'number');
-    const cur = vals.length ? vals[vals.length - 1] : null;
+    // 大数字用整个区间的良品率（后端给的 g.rate）——面板标题写的是多少天，
+    // 数字就得是多少天的。取最后一天会被小样本带偏
+    const cur = typeof g.rate === 'number' ? g.rate
+              : (vals.length ? vals[vals.length - 1] : null);
     const grade = cur === null ? null : GRADE[gradeOf(cur, data.target)];
 
     const card = document.createElement('div');
@@ -549,7 +552,10 @@ function renderSparks(data) {
       dot.style.color = grade.color;
       dot.textContent = grade.icon;
       const tx = document.createElement('span');
-      tx.textContent = grade.text;
+      // 检验量也写出来：光看比率不知道它建立在多少件上
+      tx.textContent = g.lowSample
+        ? `${grade.text}（仅 ${g.qty} 件，样本不足）`
+        : `${grade.text} · ${g.qty.toLocaleString('zh-CN')} 件`;
       st.append(dot, tx);
     } else {
       st.textContent = '无数据';

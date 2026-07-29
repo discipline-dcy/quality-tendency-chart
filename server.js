@@ -49,7 +49,9 @@ const DEFAULTS = {
   password:  '',
   days:      14,        // 趋势图显示最近多少天
   target:    98.5,      // 良品率目标线
-  minSample: 200,       // 当日检验数低于此值 → 标为样本不足
+  // 实测日检验量在 98 ~ 751 之间（单条 1~166），200 这个阈值会把一半的
+  // 日子误标成「样本不足」。降到 50，接入后按实际检验量再调
+  minSample: 50,
   topGroups: 6,         // 小倍数显示前几个产品
   refreshMs: 300000,    // 向 OA 取数的间隔，默认 5 分钟
 };
@@ -86,6 +88,7 @@ const configured = () => Boolean(cfg.userCode && cfg.password);
 // 跑一次 `node server.js --probe` 就能看到真实 key，对不上时把正确的
 // 名字加进对应数组即可 —— 只改这一处。
 // ═══════════════════════════════════════════════════════════════
+// 已连真实接口实测确认（2026-07-29），两个接口返回的都是中文字段名
 const FIELDS = {
   date:        ['检验日期', 'InspectionDate', 'inspectionDate', 'CheckDate', 'checkDate'],
   qty:         ['检验数量', '检验数', 'InspectionQty', 'inspectionQty', 'CheckQty', 'checkQty'],
@@ -93,6 +96,13 @@ const FIELDS = {
   defectAbn:   ['不良数', '不良数量', 'DefectQty', 'defectQty', 'NgQty', 'ngQty'],
   product:     ['产品代码', 'ProductCode', 'productCode', 'ItemCode', 'itemCode'],
   productName: ['产品名称', 'ProductName', 'productName', 'ItemName', 'itemName'],
+  // 库存分类是干净的机型名（BCS-160A / BC-30 / VS-75(M165)），
+  // 产品名称是一长串规格描述（「BCS-160A-110V(美标 清分美元、欧元…12国 内置打印机…）」），
+  // 五米外的大屏上放不下，所以标签优先用库存分类
+  stockClass:  ['库存分类', 'StockClass', 'stockClass'],
+  // 这两个用来诊断分子分母的记录集合对不对得齐
+  type:        ['检验类型', 'InspectionType', 'inspectionType'],
+  position:    ['检出位置', 'DetectPosition', 'detectPosition'],
 };
 
 function pick(row, names) {
@@ -167,41 +177,54 @@ function aggregate(daily, abnormal, allDays) {
   const byDay = new Map(allDays.map(d => [d, { qty: 0, defect: 0, crossDefect: 0 }]));
   const byProduct = new Map();
 
-  const touchProduct = (code, name) => {
+  const touchProduct = (code, label) => {
     if (!byProduct.has(code)) {
       byProduct.set(code, {
-        code, name: name || code, qty: 0, defect: 0,
+        code, label: label || '', qty: 0, defect: 0,
         byDay: new Map(allDays.map(d => [d, { qty: 0, defect: 0 }])),
       });
     }
     const p = byProduct.get(code);
-    if (name && p.name === p.code) p.name = name;
+    if (label && !p.label) p.label = label;
     return p;
   };
+
+  // 分子分母的记录集合对不对得齐，看「检验类型 + 检出位置」这个组合
+  const comboOf = row => `${pick(row, FIELDS.type) ?? '(空)'} / ${pick(row, FIELDS.position) ?? '(空)'}`;
+  const denomCombos = new Set();
+  const orphan = new Map();          // 分母没覆盖的组合 → 分子在上面记了多少不良
 
   // 分母：接口 5 检验日报
   for (const row of daily) {
     const day = toDay(pick(row, FIELDS.date));
     if (!day || !byDay.has(day)) continue;
+    denomCombos.add(comboOf(row));
+
     const qty = num(pick(row, FIELDS.qty));
     byDay.get(day).qty += qty;
     byDay.get(day).crossDefect += num(pick(row, FIELDS.defectDaily));
 
     const code = String(pick(row, FIELDS.product) ?? '未标注');
-    const p = touchProduct(code, pick(row, FIELDS.productName));
+    const p = touchProduct(code, pick(row, FIELDS.stockClass));
     p.qty += qty;
     p.byDay.get(day).qty += qty;
   }
 
   // 分子：接口 4 检验异常录入
+  let abnDefect = 0;
   for (const row of abnormal) {
     const day = toDay(pick(row, FIELDS.date));
     if (!day || !byDay.has(day)) continue;
     const def = num(pick(row, FIELDS.defectAbn));
     byDay.get(day).defect += def;
+    abnDefect += def;
+
+    // 这条不良所在的检验环节，分母那边根本没有对应记录 → 记下来
+    const combo = comboOf(row);
+    if (def > 0 && !denomCombos.has(combo)) orphan.set(combo, (orphan.get(combo) || 0) + def);
 
     const code = String(pick(row, FIELDS.product) ?? '未标注');
-    const p = touchProduct(code, pick(row, FIELDS.productName));
+    const p = touchProduct(code, pick(row, FIELDS.stockClass));
     p.defect += def;
     p.byDay.get(day).defect += def;
   }
@@ -226,31 +249,71 @@ function aggregate(daily, abnormal, allDays) {
     .sort((a, b) => b.qty - a.qty)
     .slice(0, cfg.topGroups)
     .map(p => ({
-      name: p.name === p.code ? p.code : `${p.code} · ${p.name}`,
+      name: p.label || p.code,        // 机型名优先；没有就退回产品代码
+      code: p.code,
+      // 卡片上的大数字用**整个区间**的良品率，不是最后一天的。
+      // 面板标题写的是 14 天，数字就得是 14 天的 —— 取最后一天的话，
+      // 某产品那天只检了 8 件坏 1 件就显示 87.5%，会让人去追一个不存在的问题
+      qty: p.qty,
+      defect: p.defect,
+      rate: rateOf(p.qty, p.defect),
+      lowSample: p.qty < cfg.minSample,
       spark: allDays.map(day => {
         const c = p.byDay.get(day);
         return rateOf(c.qty, c.defect);
       }),
     }));
 
-  return { series, groups };
+  // 库存分类会重名（多个产品代码同属「点钞机半制品」）。三张卡片顶着
+  // 一模一样的标题，在大屏上等于没标 —— 重名的补上产品代码后缀区分
+  const nameCount = groups.reduce((m, g) => (m[g.name] = (m[g.name] || 0) + 1, m), {});
+  for (const g of groups) {
+    if (nameCount[g.name] > 1 && g.name !== g.code) g.name = `${g.name} ${g.code.slice(-4)}`;
+  }
+
+  const dailyOwnDefect = daily.reduce((s, r) => s + num(pick(r, FIELDS.defectDaily)), 0);
+  const orphanList = [...orphan.entries()].sort((a, b) => b[1] - a[1]);
+
+  return {
+    series, groups,
+    audit: {
+      dailyOwnDefect,                                        // 日报自己填的不良合计
+      abnormalDefect: abnDefect,                             // 当前分子
+      orphanDefect: orphanList.reduce((s, [, v]) => s + v, 0),
+      orphanCombos: orphanList.slice(0, 5).map(([k, v]) => `${k} → ${v} 件`),
+    },
+  };
 }
 
-// 分子分母不同源的固有风险：拿接口 5 自带的不良数量算一份对照，差太多就标记
-function crossCheck(series) {
-  const valid = series.filter(s => s.rate !== null && s.crossRate !== null);
-  if (!valid.length) return null;
-  const worst = valid.reduce((a, b) =>
-    Math.abs(b.rate - b.crossRate) > Math.abs(a.rate - a.crossRate) ? b : a);
-  const gap = +Math.abs(worst.rate - worst.crossRate).toFixed(1);
+// ═══════════════════════════════════════════════════════════════
+// 口径体检
+//
+// 分子分母不同源，风险是真的。但实测发现「拿日报自带的不良数量做对照」
+// 这条路走不通 —— 日报里 100 条只有 20 条填了不良数量，合计 64 件，
+// 而异常录入是 156 件。日报那个字段基本没人填，拿它当基准只会一直误报。
+// （反过来说，这恰好证明用异常录入当分子是对的。）
+//
+// 真正该盯的是另一件事：**分子里有多少不良，落在分母根本没覆盖的检验环节上**。
+// 实测确实存在 —— 异常录入里有「流水生产互检」「组件生产」，日报里一条都没有。
+// 这部分不良有分子没分母，会把良品率算低。这个量是可以精确算出来的，
+// 所以体检报这个数，不报那个虚的百分点差。
+// ═══════════════════════════════════════════════════════════════
+function auditRatio(audit, totalQty) {
+  const { orphanDefect, orphanCombos, abnormalDefect, dailyOwnDefect } = audit;
+  const pct = totalQty > 0 ? +(orphanDefect / totalQty * 100).toFixed(2) : 0;
+  const ok = orphanDefect === 0;
   return {
-    maxGap: gap,
-    onDate: worst.date,
-    ok: gap < 0.5,
-    note: gap < 0.5
-      ? '两种口径基本一致'
-      : `${worst.date} 两种口径差 ${gap} 个百分点：异常录入(${worst.rate}%) vs 日报自带不良数(${worst.crossRate}%)。` +
-        '说明有不良没走异常录入流程，或异常录入包含了日报未覆盖的检验。',
+    ...audit,
+    orphanPct: pct,
+    ok,
+    note: ok
+      ? '分子的检验环节都能在分母里找到对应记录'
+      : `分子里有 ${orphanDefect} 件不良（占分母 ${pct}%）来自分母未覆盖的检验环节，` +
+        `这部分有分子没分母，会把良品率算低：${orphanCombos.join('；')}`,
+    hint: dailyOwnDefect < abnormalDefect * 0.6
+      ? `另注：日报自带的「不良数量」只有 ${dailyOwnDefect} 件，远少于异常录入的 ${abnormalDefect} 件，` +
+        '说明日报那个字段基本没人填 —— 用异常录入当分子是对的。'
+      : null,
   };
 }
 
@@ -273,7 +336,7 @@ async function fetchQuality() {
 
   if (!daily.length) throw new Error(`检验日报列表在 ${startDate} ~ ${endDate} 没有数据`);
 
-  const { series, groups } = aggregate(daily, abnormal, allDays);
+  const { series, groups, audit } = aggregate(daily, abnormal, allDays);
 
   const withData = series.filter(s => s.output > 0);
   const latest = withData[withData.length - 1] || null;
@@ -298,7 +361,7 @@ async function fetchQuality() {
     },
     series,
     groups,
-    crossCheck: crossCheck(series),
+    crossCheck: auditRatio(audit, totalQty),
     counts: { 日报记录: daily.length, 异常记录: abnormal.length },
   };
 }
