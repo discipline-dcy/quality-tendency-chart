@@ -27,8 +27,15 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const PORT = 3200;                      // 3000 生产看板 / 3100 周报 / 3200 质量趋势
+
+// 绑 0.0.0.0 而不是 127.0.0.1：车间大屏、班组长的电脑、主任的手机都在
+// 内网另一头，只绑本机回环的话除了服务器自己谁都打不开。
+// 这本来就是 listen(PORT) 不写 host 时的默认行为，这里写出来是为了讲明白
+// 「对内网开放」是有意为之，别哪天被当成疏漏改回 localhost。
+const HOST = '0.0.0.0';
 const PROBE = process.argv.includes('--probe');
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 
@@ -544,6 +551,29 @@ async function handleLogout(req, res) {
   sendJSON(res, 200, { ok: true });
 }
 
+/**
+ * 列出这台机器的内网 IPv4，给启动日志用 —— 别人问「网址是多少」的时候
+ * 不用再去翻 ipconfig。
+ *
+ * 滤掉两类地址：
+ *   - internal（127.0.0.1）：只有本机能用，这里要的是给别人用的地址
+ *   - 169.254.x.x：APIPA，DHCP 没拿到地址时系统自己编的，连不通。
+ *     这台机器上光虚拟网卡就有好几个这种，不滤会淹掉真正能用的那个。
+ */
+function lanAddresses() {
+  const out = [];
+  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+    for (const a of addrs || []) {
+      // family 在 Node 18.0~18.3 那几个版本里是数字 4，之后又改回了字符串
+      // 'IPv4'。服务器上的 Node 版本不归我们管，两种都认。
+      if ((a.family !== 'IPv4' && a.family !== 4) || a.internal) continue;
+      if (a.address.startsWith('169.254.')) continue;
+      out.push({ address: a.address, name });
+    }
+  }
+  return out;
+}
+
 function serve() {
   const server = http.createServer(async (req, res) => {
     const url = req.url.split('?')[0];
@@ -598,10 +628,19 @@ function serve() {
     res.end('404 Not Found');
   });
 
-  server.listen(PORT, () => {
+  server.listen(PORT, HOST, () => {
+    const lan = lanAddresses();
     console.log('─'.repeat(56));
     console.log('  质量趋势图已启动');
-    console.log(`  看板页面：http://localhost:${PORT}`);
+    console.log(`  本机访问：http://localhost:${PORT}`);
+    if (lan.length) {
+      console.log('  内网访问（大屏和其他电脑用这个）：');
+      for (const { address, name } of lan) {
+        console.log(`    http://${address}:${PORT}    ← ${name}`);
+      }
+    } else {
+      console.log('  ⚠ 没找到内网 IP，这台机器可能没连网，其他电脑打不开。');
+    }
     console.log(`  数据接口：http://localhost:${PORT}/api/quality`);
     if (configured()) {
       console.log(`  OA 账号：${cfg.userCode}（已配置）`);
