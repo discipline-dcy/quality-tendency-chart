@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>质量趋势 · 原型</title>
+<style>
+  /* ═══════════════════════════════════════════════════════════
+     配色 —— 与 index.html 同一套 token，暗色单主题
+     车间大屏常年长亮，暗背景眩光小、夜班不刺眼
+     ═══════════════════════════════════════════════════════════ */
+  :root {
+    --plane:     #0d0d0d;
+    --surface:   #1a1a19;
+    --ink:       #ffffff;
+    --ink-2:     #c3c2b7;
+    --ink-muted: #898781;
+    --hairline:  rgba(255,255,255,0.10);
+
+    /* 图表专用：网格与轴要比数据弱一档，永远是实线 */
+    --grid:      #2c2c2a;
+    --axis:      #383835;
+
+    /* 序列色只有一个 —— 见设计方案「为什么不给不良品数单独配色」 */
+    --series-1:  #3987e5;
+
+    /* 状态色：固定四档，只表示状态，绝不当序列色用 */
+    --good:      #0ca30c;
+    --warning:   #fab219;
+    --critical:  #d03b3b;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: clamp(16px, 1.8vw, 32px);
+    min-height: 100vh;
+    background: var(--plane);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei",
+                 "PingFang SC", "Noto Sans CJK SC", sans-serif;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(12px, 1.4vw, 22px);
+  }
+
+  header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 16px; }
+  h1 { margin: 0; font-size: clamp(20px, 2.2vw, 38px); font-weight: 600; letter-spacing: .04em; }
+  .shift { font-size: clamp(13px, 1.2vw, 20px); color: var(--ink-2); }
+  .clock {
+    margin-left: auto;
+    font-size: clamp(18px, 2vw, 34px);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-2);
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    padding: clamp(14px, 1.5vw, 26px);
+  }
+
+  .label {
+    font-size: clamp(12px, 1.05vw, 17px);
+    color: var(--ink-muted);
+    margin-bottom: .4em;
+  }
+
+  /* ── 上半区：左侧指标 + 右侧两张图 ─────────────────────── */
+  .top {
+    display: grid;
+    grid-template-columns: minmax(210px, 1fr) 3.4fr;
+    gap: clamp(12px, 1.4vw, 22px);
+  }
+  @media (max-width: 900px) { .top { grid-template-columns: 1fr; } }
+
+  .kpis { display: flex; flex-direction: column; gap: clamp(12px, 1.4vw, 22px); }
+
+  /* 本页最大的数字，但仍比主看板的「今日总完成率」小一号 ——
+     整个大屏体系里主数字只能有一个 */
+  .figure {
+    font-size: clamp(38px, 5vw, 76px);
+    font-weight: 600;
+    line-height: 1;
+    /* 大号数字用默认比例字形，tabular-nums 会显得松散 */
+  }
+  .figure .unit { font-size: .38em; font-weight: 500; color: var(--ink-2); margin-left: .1em; }
+
+  .stat-value { font-size: clamp(22px, 2.6vw, 42px); font-weight: 600; line-height: 1.1; }
+
+  /* 状态标记：图标形状 + 文字，颜色只是辅助 */
+  .status {
+    display: inline-flex; align-items: center; gap: .45em;
+    font-size: clamp(13px, 1.25vw, 21px);
+    color: var(--ink-2);
+    margin-top: .5em;
+    white-space: nowrap;
+  }
+  .status .icon { line-height: 1; }
+
+  /* 环比：方向由箭头字符承担，颜色只是辅助 */
+  .delta {
+    font-size: clamp(12px, 1.1vw, 18px);
+    color: var(--ink-2);
+    margin-top: .45em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .panels { display: flex; flex-direction: column; gap: clamp(10px, 1.1vw, 18px); }
+  .panel-title {
+    display: flex; align-items: baseline; gap: .8em; flex-wrap: wrap;
+    font-size: clamp(13px, 1.15vw, 20px);
+    font-weight: 500;
+    margin: 0 0 .5em;
+  }
+  .panel-title .sub { font-size: .8em; font-weight: 400; color: var(--ink-muted); }
+
+  /* 图容器高度随内容走，不写死 —— 写死会把 x 轴文字挤出去 */
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+  /* ── 下半区：各产线小倍数 ─────────────────────────────── */
+  .spark-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+    gap: clamp(10px, 1.2vw, 20px);
+  }
+  .spark-card { display: flex; flex-direction: column; gap: .4em; }
+  .spark-head { display: flex; align-items: baseline; gap: .5em; }
+  .spark-name { font-size: clamp(13px, 1.15vw, 20px); font-weight: 500; }
+  .spark-rate {
+    margin-left: auto;
+    font-size: clamp(15px, 1.4vw, 24px);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .spark-status { font-size: clamp(11px, .95vw, 15px); color: var(--ink-2); display: flex; align-items: center; gap: .4em; }
+
+  /* ── 表格视图（每张图的等价物，不靠颜色传信息）───────── */
+  details.table-view { margin-top: .5em; }
+  details.table-view summary {
+    font-size: clamp(12px, 1.05vw, 17px);
+    color: var(--ink-muted);
+    cursor: pointer;
+    list-style: none;
+  }
+  details.table-view summary::before { content: "▸ "; }
+  details.table-view[open] summary::before { content: "▾ "; }
+  table { border-collapse: collapse; margin-top: .8em; font-size: clamp(12px, 1.05vw, 17px); }
+  th, td {
+    padding: .45em .9em .45em 0;
+    text-align: right;
+    font-variant-numeric: tabular-nums;   /* 成列的数字必须对齐 */
+    border-bottom: 1px solid var(--hairline);
+  }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--ink-muted); font-weight: 500; }
+
+  footer {
+    font-size: clamp(11px, 1vw, 16px);
+    color: var(--ink-muted);
+    display: flex; flex-wrap: wrap; gap: 1.5em;
+  }
+</style>
+</head>
+<body>
+
+  <header>
+    <h1>质量趋势</h1>
+    <span class="shift" id="shift">—</span>
+    <span class="clock" id="clock">--:--:--</span>
+  </header>
+
+  <section class="top">
+    <div class="kpis">
+      <div class="card">
+        <div class="label">本班次良品率</div>
+        <div class="figure"><span id="figRate">--</span><span class="unit">%</span></div>
+        <div class="status" id="figStatus"></div>
+        <div class="delta" id="figDelta"></div>
+      </div>
+      <div class="card">
+        <div class="label">不良品累计</div>
+        <div class="stat-value"><span id="figDefect">--</span> 件</div>
+        <div class="delta" id="figDefectDelta"></div>
+      </div>
+    </div>
+
+    <div class="panels">
+      <div class="card">
+        <h2 class="panel-title">
+          良品率趋势
+          <span class="sub" id="trendSub">本班次 · 每小时</span>
+        </h2>
+        <svg id="trend" viewBox="0 0 1200 300" role="img"
+             aria-label="本班次每小时良品率折线图"></svg>
+      </div>
+
+      <div class="card">
+        <h2 class="panel-title">
+          不良品数
+          <span class="sub">件 / 小时 · 纵轴自 0 起</span>
+        </h2>
+        <svg id="defects" viewBox="0 0 1200 190" role="img"
+             aria-label="本班次每小时不良品数柱状图"></svg>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 class="panel-title">
+      各产线良品率
+      <span class="sub">近 7 小时 · 六张小图共用 95–100% 同一纵轴，形状可直接互比</span>
+    </h2>
+    <div class="spark-grid" id="sparks"></div>
+
+    <details class="table-view">
+      <summary>表格视图（全部数值）</summary>
+      <div id="tableView"></div>
+    </details>
+  </section>
+
+  <footer>
+    <span>原型数据 · 接入真实数据源见 loadQuality()</span>
+    <span id="lastUpdate">—</span>
+  </footer>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// 数据源
+//
+// 现在是写死的模拟数据。接真实数据时只改 loadQuality() 这一个函数：
+//     async function loadQuality() {
+//       const res = await fetch('/api/quality', { cache: 'no-store' });
+//       if (!res.ok) throw new Error('HTTP ' + res.status);
+//       return res.json();
+//     }
+// 其余渲染代码一律不用动。
+// ═══════════════════════════════════════════════════════════════
+
+const MOCK = {
+  updatedAt: '2026-07-27T06:27:39.000Z',
+  shift: '白班',
+  target: 98.5,          // 良品率目标线
+  minSample: 200,        // 低于这个产量的小时视为「样本不足」
+  summary: {
+    rate: 97.9,
+    defect: 86,
+    output: 4185,
+    rateDelta: -0.5,     // 相对上一班次的百分点差
+    defectDelta: +12,
+    deltaBase: '上一班次',
+  },
+  // 每小时：产量、不良数、良品率
+  series: [
+    { t: '08:00', output: 620, defect:  8, rate: 98.7 },
+    { t: '09:00', output: 780, defect:  9, rate: 98.8 },
+    { t: '10:00', output: 810, defect: 11, rate: 98.6 },
+    { t: '11:00', output: 760, defect: 21, rate: 97.2 },
+    { t: '12:00', output: 115, defect:  4, rate: 96.5 },   // 午休，样本不足
+    { t: '13:00', output: 720, defect: 27, rate: 96.3 },   // 低谷
+    { t: '14:00', output: 380, defect:  6, rate: 98.4 },   // 当前小时，未走完
+  ],
+  lines: [
+    { id: 1, name: '一号线 · 装配', spark: [99.2, 99.0, 98.8, 98.9, 99.1, 98.7, 99.1] },
+    { id: 2, name: '二号线 · 焊接', spark: [98.9, 98.6, 98.7, 98.4, 98.6, 98.5, 98.6] },
+    { id: 3, name: '三号线 · 喷涂', spark: [98.7, 98.8, 98.5, 97.9, 97.6, 96.8, 96.4] },
+    { id: 4, name: '四号线 · 总装', spark: [99.0, 98.8, 98.9, 98.6, 98.5, 98.4, 98.6] },
+    { id: 5, name: '五号线 · 包装', spark: [99.4, 99.3, 99.5, 99.2, 99.4, 99.3, 99.4] },
+    { id: 6, name: '六号线 · 检测', spark: [98.2, 98.1, 97.9, 97.6, 97.4, 97.2, 97.0] },
+  ],
+};
+
+async function loadQuality() {
+  return MOCK;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 良品率的状态判定
+// 三档，每档配「不同形状」的图标 + 文字 —— 红绿色盲看不出红绿差别，
+// 形状和文字才是可靠通道，颜色只是辅助
+// ═══════════════════════════════════════════════════════════════
+const GRADE = {
+  good:     { icon: '●', text: '达标', color: 'var(--good)'     },
+  warning:  { icon: '◆', text: '预警', color: 'var(--warning)'  },
+  critical: { icon: '■', text: '超标', color: 'var(--critical)' },
+};
+
+function gradeOf(rate, target) {
+  if (rate >= target) return 'good';
+  if (rate >= target - 1.5) return 'warning';
+  return 'critical';
+}
+
+// 纵轴范围：良品率数据挤在 96–99 之间，从 0 起画会是一条直线，
+// 什么都看不出来。折线图允许截断纵轴（柱状图不允许 —— 柱长就是数值）。
+// 代价是必须把起点标清楚，并让目标线当锚点。
+function rateScale(values, target) {
+  const lo = Math.floor(Math.min(...values, target) - 0.5);
+  return { lo, hi: 100 };
+}
+
+const SVGNS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, text) {
+  const node = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) node.setAttribute(k, attrs[k]);
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 主图：良品率折线
+// ═══════════════════════════════════════════════════════════════
+function renderTrend(data) {
+  const svg = document.getElementById('trend');
+  svg.textContent = '';
+
+  const W = 1200, H = 300;
+  const padL = 74, padR = 96, padT = 26, padB = 42;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  const pts = data.series;
+  const { lo, hi } = rateScale(pts.map(p => p.rate), data.target);
+  const x = i => padL + (pts.length === 1 ? plotW / 2 : i * plotW / (pts.length - 1));
+  const y = v => padT + plotH - (v - lo) / (hi - lo) * plotH;
+
+  // ── 网格线：实线发丝，比数据弱一档（虚线会被读成「阈值」）──
+  for (let v = lo; v <= hi; v++) {
+    svg.appendChild(el('line', {
+      x1: padL, x2: padL + plotW, y1: y(v), y2: y(v),
+      stroke: 'var(--grid)', 'stroke-width': 1,
+    }));
+    svg.appendChild(el('text', {
+      x: padL - 12, y: y(v) + 6, 'text-anchor': 'end',
+      fill: 'var(--ink-muted)', 'font-size': 17,
+      'font-variant-numeric': 'tabular-nums',
+    }, v + '%'));
+  }
+
+  // ── 目标线：这是真正的阈值，虚线在这里是正当用法 ──
+  // 标签放左端线上方：右侧留给末点数值，两者挤在一起会叠字
+  svg.appendChild(el('line', {
+    x1: padL, x2: padL + plotW, y1: y(data.target), y2: y(data.target),
+    stroke: 'var(--warning)', 'stroke-width': 2,
+    'stroke-dasharray': '8 6', 'stroke-linecap': 'round',
+  }));
+  svg.appendChild(el('text', {
+    x: padL + 4, y: y(data.target) - 10,
+    fill: 'var(--ink-2)', 'font-size': 17,
+  }, '目标 ' + data.target + '%'));
+
+  // 不画面积填充：纵轴是截断的，面积的高度不代表数值本身，
+  // 涂上去会把「离基线多远」说成「有多少」
+
+  // ── 折线：2px，圆角接头 ──
+  // 样本不足的小时（产量太少，坏一件就掉几个百分点）单独用半透明段落，
+  // 免得大屏上看着像真的塌了一次
+  for (let i = 1; i < pts.length; i++) {
+    const weak = pts[i].output < data.minSample || pts[i - 1].output < data.minSample;
+    svg.appendChild(el('path', {
+      d: `M${x(i - 1)},${y(pts[i - 1].rate)} L${x(i)},${y(pts[i].rate)}`,
+      fill: 'none', stroke: 'var(--series-1)', 'stroke-width': 2,
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+      opacity: weak ? 0.35 : 1,
+    }));
+  }
+
+  // ── 数据点：8px，2px 表面色描边环，压线时也看得清 ──
+  pts.forEach((p, i) => {
+    const weak = p.output < data.minSample;
+    svg.appendChild(el('circle', {
+      cx: x(i), cy: y(p.rate), r: 4,
+      fill: weak ? 'var(--surface)' : 'var(--series-1)',
+      stroke: weak ? 'var(--series-1)' : 'var(--surface)',
+      'stroke-width': 2,
+      opacity: weak ? 0.6 : 1,
+    }));
+  });
+
+  // ── 直接标注：只标两个 —— 末点和最低点。
+  // 每个点都标数字等于没标，大屏上尤其糊 ──
+  const lastIdx = pts.length - 1;
+  const lowIdx = pts.reduce((best, p, i) =>
+    p.rate < pts[best].rate ? i : best, 0);
+
+  function tag(i, anchor, dy) {
+    const p = pts[i];
+    svg.appendChild(el('text', {
+      x: x(i) + (anchor === 'end' ? -10 : 10), y: y(p.rate) + dy,
+      'text-anchor': anchor,
+      fill: 'var(--ink)', 'font-size': 21, 'font-weight': 600,
+      'font-variant-numeric': 'tabular-nums',
+    }, p.rate.toFixed(1) + '%'));
+  }
+  if (lowIdx !== lastIdx) tag(lowIdx, 'middle', 30);
+  tag(lastIdx, 'start', 6);
+
+  // ── x 轴 ──
+  svg.appendChild(el('line', {
+    x1: padL, x2: padL + plotW, y1: padT + plotH, y2: padT + plotH,
+    stroke: 'var(--axis)', 'stroke-width': 1,
+  }));
+  pts.forEach((p, i) => {
+    svg.appendChild(el('text', {
+      x: x(i), y: padT + plotH + 28, 'text-anchor': 'middle',
+      fill: 'var(--ink-muted)', 'font-size': 17,
+      'font-variant-numeric': 'tabular-nums',
+      opacity: p.output < data.minSample ? 0.55 : 1,
+    }, p.t));
+  });
+
+  // 纵轴不从 0 起，必须说明，否则会被读成「良品率快掉到底了」
+  svg.appendChild(el('text', {
+    x: padL, y: 16, fill: 'var(--ink-muted)', 'font-size': 15,
+  }, `纵轴 ${lo}–${hi}%（非零起点）· 空心点＝该小时产量不足 ${data.minSample} 件，比率仅供参考`));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 副图：每小时不良品数
+//
+// 为什么不和良品率画在一张图上（双纵轴）：两个纵轴怎么对齐全凭主观，
+// 图会「造」出一个数据里根本没有的相关性。所以拆成上下两张，共用时间轴。
+// ═══════════════════════════════════════════════════════════════
+function renderDefects(data) {
+  const svg = document.getElementById('defects');
+  svg.textContent = '';
+
+  const W = 1200, H = 190;
+  const padL = 74, padR = 96, padT = 16, padB = 42;   // 左右和主图一致，两图 x 对齐
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  const pts = data.series;
+  const raw = Math.max(...pts.map(p => p.defect), 1);
+  const step = raw <= 10 ? 2 : raw <= 30 ? 10 : 20;
+  const hi = Math.ceil(raw / step) * step;            // 柱状图纵轴必须从 0 起
+
+  const slot = plotW / pts.length;
+  const bw = Math.min(24, slot - 2 - 24);             // 柱不占满槽位，留空气；≤24px
+  const x = i => padL + slot * (i + 0.5);
+  const y = v => padT + plotH - v / hi * plotH;
+
+  for (let v = 0; v <= hi; v += step) {
+    svg.appendChild(el('line', {
+      x1: padL, x2: padL + plotW, y1: y(v), y2: y(v),
+      stroke: v === 0 ? 'var(--axis)' : 'var(--grid)', 'stroke-width': 1,
+    }));
+    svg.appendChild(el('text', {
+      x: padL - 12, y: y(v) + 6, 'text-anchor': 'end',
+      fill: 'var(--ink-muted)', 'font-size': 17,
+      'font-variant-numeric': 'tabular-nums',
+    }, v));
+  }
+
+  pts.forEach((p, i) => {
+    const h = Math.max(0, plotH - (y(p.defect) - padT));
+    // 数据端 4px 圆角、基线端方角，柱子从同一条基线长出来
+    svg.appendChild(el('path', {
+      d: `M${x(i) - bw / 2},${padT + plotH}
+          L${x(i) - bw / 2},${y(p.defect) + 4}
+          Q${x(i) - bw / 2},${y(p.defect)} ${x(i) - bw / 2 + 4},${y(p.defect)}
+          L${x(i) + bw / 2 - 4},${y(p.defect)}
+          Q${x(i) + bw / 2},${y(p.defect)} ${x(i) + bw / 2},${y(p.defect) + 4}
+          L${x(i) + bw / 2},${padT + plotH} Z`.replace(/\s+/g, ' '),
+      fill: 'var(--series-1)',
+      opacity: p.output < data.minSample ? 0.45 : 1,
+    }));
+    svg.appendChild(el('text', {
+      x: x(i), y: padT + plotH + 28, 'text-anchor': 'middle',
+      fill: 'var(--ink-muted)', 'font-size': 17,
+      'font-variant-numeric': 'tabular-nums',
+      opacity: p.output < data.minSample ? 0.55 : 1,
+    }, p.t));
+  });
+
+  // 只标峰值一个
+  const peak = pts.reduce((b, p, i) => p.defect > pts[b].defect ? i : b, 0);
+  svg.appendChild(el('text', {
+    x: x(peak), y: y(pts[peak].defect) - 12, 'text-anchor': 'middle',
+    fill: 'var(--ink)', 'font-size': 21, 'font-weight': 600,
+    'font-variant-numeric': 'tabular-nums',
+  }, pts[peak].defect));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 小倍数：每条产线一张迷你折线
+//
+// 六张图共用同一个纵轴范围。各画各的范围会让所有线看起来一样陡，
+// 那是在骗人。
+// ═══════════════════════════════════════════════════════════════
+function renderSparks(data) {
+  const box = document.getElementById('sparks');
+  box.textContent = '';
+
+  const all = data.lines.flatMap(l => l.spark);
+  const { lo, hi } = rateScale(all, data.target);
+
+  data.lines.forEach(line => {
+    const cur = line.spark[line.spark.length - 1];
+    const g = GRADE[gradeOf(cur, data.target)];
+
+    const card = document.createElement('div');
+    card.className = 'spark-card';
+    card.innerHTML = `
+      <div class="spark-head">
+        <span class="spark-name">${line.name}</span>
+        <span class="spark-rate">${cur.toFixed(1)}%</span>
+      </div>`;
+
+    const W = 240, H = 56, padT = 6, padB = 6;
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img',
+      'aria-label': `${line.name} 近 7 小时良品率，当前 ${cur.toFixed(1)}%，${g.text}` });
+
+    const x = i => i * W / (line.spark.length - 1);
+    const y = v => padT + (H - padT - padB) - (v - lo) / (hi - lo) * (H - padT - padB);
+
+    // 目标线：小图里也保留，否则读者没有判断高低的锚点
+    svg.appendChild(el('line', {
+      x1: 0, x2: W, y1: y(data.target), y2: y(data.target),
+      stroke: 'var(--warning)', 'stroke-width': 1.5,
+      'stroke-dasharray': '5 4', opacity: 0.75,
+    }));
+    svg.appendChild(el('path', {
+      d: line.spark.map((v, i) => `${i ? 'L' : 'M'}${x(i)},${y(v)}`).join(' '),
+      fill: 'none', stroke: 'var(--series-1)', 'stroke-width': 2,
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+    }));
+    // 末点加环，指明「现在在这」
+    svg.appendChild(el('circle', {
+      cx: x(line.spark.length - 1), cy: y(cur), r: 4,
+      fill: 'var(--series-1)', stroke: 'var(--surface)', 'stroke-width': 2,
+    }));
+    card.appendChild(svg);
+
+    const st = document.createElement('div');
+    st.className = 'spark-status';
+    st.innerHTML = `<span style="color:${g.color}">${g.icon}</span><span>${g.text}</span>`;
+    card.appendChild(st);
+
+    box.appendChild(card);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 表格视图 —— 每张图的等价物。大屏上折叠着，但值永远拿得到，
+// 不会出现「只有把鼠标悬上去才能读到数」的情况（大屏根本没鼠标）
+// ═══════════════════════════════════════════════════════════════
+function renderTable(data) {
+  const hours = data.series.map(p => `<th>${p.t}</th>`).join('');
+  const row = (name, cells) => `<tr><td>${name}</td>${cells}</tr>`;
+
+  document.getElementById('tableView').innerHTML = `
+    <table>
+      <thead><tr><th>小时</th>${hours}<th>合计</th></tr></thead>
+      <tbody>
+        ${row('产量（件）', data.series.map(p => `<td>${p.output.toLocaleString('zh-CN')}</td>`).join('')
+          + `<td>${data.summary.output.toLocaleString('zh-CN')}</td>`)}
+        ${row('不良（件）', data.series.map(p => `<td>${p.defect}</td>`).join('')
+          + `<td>${data.summary.defect}</td>`)}
+        ${row('良品率（%）', data.series.map(p =>
+            `<td${p.output < data.minSample ? ' style="color:var(--ink-muted)"' : ''}>${p.rate.toFixed(1)}</td>`).join('')
+          + `<td>${data.summary.rate.toFixed(1)}</td>`)}
+      </tbody>
+    </table>
+    <table>
+      <thead><tr><th>产线</th>${hours}<th>状态</th></tr></thead>
+      <tbody>
+        ${data.lines.map(l => {
+          const cur = l.spark[l.spark.length - 1];
+          const g = GRADE[gradeOf(cur, data.target)];
+          return row(l.name, l.spark.map(v => `<td>${v.toFixed(1)}</td>`).join('')
+            + `<td>${g.icon} ${g.text}</td>`);
+        }).join('')}
+      </tbody>
+    </table>`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 渲染入口
+// ═══════════════════════════════════════════════════════════════
+function render(data) {
+  const s = data.summary;
+  const g = GRADE[gradeOf(s.rate, data.target)];
+
+  document.getElementById('shift').textContent = data.shift;
+  document.getElementById('figRate').textContent = s.rate.toFixed(1);
+  document.getElementById('figStatus').innerHTML =
+    `<span class="icon" style="color:${g.color}">${g.icon}</span><span>${g.text}（目标 ${data.target}%）</span>`;
+
+  // 方向由箭头字符承担，颜色只是加强
+  const up = s.rateDelta >= 0;
+  document.getElementById('figDelta').innerHTML =
+    `<span style="color:${up ? 'var(--good)' : 'var(--critical)'}">${up ? '↑' : '↓'}</span> ` +
+    `${Math.abs(s.rateDelta).toFixed(1)} 个百分点 · 较${s.deltaBase}`;
+
+  document.getElementById('figDefect').textContent = s.defect.toLocaleString('zh-CN');
+  const dUp = s.defectDelta >= 0;
+  document.getElementById('figDefectDelta').innerHTML =
+    `<span style="color:${dUp ? 'var(--critical)' : 'var(--good)'}">${dUp ? '↑' : '↓'}</span> ` +
+    `${Math.abs(s.defectDelta)} 件 · 较${s.deltaBase}`;
+
+  renderTrend(data);
+  renderDefects(data);
+  renderSparks(data);
+  renderTable(data);
+
+  document.getElementById('lastUpdate').textContent =
+    '最后更新 ' + new Date(data.updatedAt).toLocaleTimeString('zh-CN');
+}
+
+function tickClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN');
+}
+
+tickClock();
+setInterval(tickClock, 1000);
+
+loadQuality().then(render).catch(err => console.error('质量数据加载失败:', err));
+</script>
+</body>
+</html>
