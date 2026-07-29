@@ -180,6 +180,20 @@
     color: var(--ink-muted);
     display: flex; flex-wrap: wrap; gap: 1.5em;
   }
+
+  /* 页面里唯一的链接（去 /setup 配账号）。
+     不用蓝色 —— 这套配色里蓝是序列色、红黄绿是状态色，都有各自的含义，
+     借过来当链接色会让"蓝＝数据线"这条规则出现例外。改用下划线 + 提亮一档
+     来表示可点，不引入新颜色，五米外也不会跟旁边的数字抢注意力 */
+  a {
+    color: var(--ink-2);
+    text-decoration: underline;
+    text-underline-offset: .25em;
+  }
+  a:hover { color: var(--ink); }
+  a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+  /* 提示条自带背景色，链接在上面跟着正文走就行，再变色只会更难认 */
+  .banner a { color: inherit; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -244,6 +258,9 @@
     <span>数据每 60 秒自动刷新</span>
     <span id="source">—</span>
     <span id="lastUpdate">尚未获取数据</span>
+    <!-- 用相对路径，别写死 localhost：大屏上看板是通过服务器内网 IP 打开的，
+         写死的话点过去会跳到大屏自己那台机器上，那儿根本没有服务 -->
+    <a href="/setup">配置 OA 账号</a>
   </footer>
 
 <script>
@@ -680,8 +697,12 @@ async function load() {
       failCount = 0;
       render({ ...DEMO, range: '示例数据（尚未配置 OA 账号）' });
       const b = document.getElementById('bannerErr');
-      b.textContent = '◆ 还没配置 OA 账号，下面显示的是示例数据。'
-        + '请在电脑上打开本机的 /setup 页面登录一次（只需一次，之后大屏一直用这个账号取数）。';
+      // 这里用 innerHTML 是因为要塞一个链接，且整段文案全是写死的常量，
+      // 没有任何来自接口或用户的内容。下面那条报错横幅带 err.message，
+      // 那个必须继续用 textContent
+      b.innerHTML = '◆ 还没配置 OA 账号，下面显示的是示例数据。'
+        + '请在电脑上打开 <a href="/setup">账号配置页</a> 登录一次'
+        + '（只需一次，之后大屏一直用这个账号取数）。';
       b.classList.add('show');
       return;
     }
@@ -700,6 +721,16 @@ async function load() {
       b.textContent = `■ 数据连接异常（已连续失败 ${failCount} 次：${err.message}）${stale}`;
       b.classList.add('show');
     }
+  }
+}
+
+// 双击打开看板时地址栏是 file://，/setup 这个相对链接会指向 file:///setup —— 死链。
+// 能双击打开就说明人在本机，改写成服务地址即可（端口跟着 server.js 的 PORT 走）。
+// 正常通过 http 打开时不动它：那时相对路径本来就是对的，而且比写死 localhost 更对 ——
+// 大屏走的是服务器内网 IP，写死会把人送到大屏自己那台机器上
+if (location.protocol === 'file:') {
+  for (const a of document.querySelectorAll('a[href="/setup"]')) {
+    a.href = 'http://localhost:3200/setup';
   }
 }
 

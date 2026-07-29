@@ -96,6 +96,13 @@
   .msg.warn { background: rgba(250,178,25,0.13); border-color: var(--warning); }
   .msg.err  { background: rgba(208,59,59,0.15);  border-color: var(--critical); }
 
+  /* 配好之后的「N 秒后回到看板」那一行，挂在结果提示里面 */
+  .jump {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .jump button { padding: 5px 12px; font-size: 13px; }
+
   .note {
     font-size: 13.5px;
     color: var(--ink-muted);
@@ -180,13 +187,61 @@
 </div>
 
 <script>
+// 双击文件打开时地址栏是 file://，页面里所有 fetch('/api/...') 会被解析成
+// file:///api/...，请求根本发不出去 —— 看上去就像服务没连上，其实是打开方式不对。
+// 所以这个页面无论怎么打开，都先把自己送到服务地址上去。
+//
+// 用 replace 不用 href：不留历史记录。否则按浏览器返回键会退回 file:// 版本，
+// 又被立刻弹走，在两个地址之间来回死循环。
+//
+// 端口跟着 server.js 的 PORT 走，改那边这里也要改。
+// 写死 localhost 是对的：file:// 本来就只可能是在本机双击打开的。
+const SETUP_URL = 'http://localhost:3200/setup';
+const redirecting = location.protocol === 'file:';
+if (redirecting) location.replace(SETUP_URL);
+
 const $ = id => document.getElementById(id);
 let isConfigured = false;
+let jumpTimer = null;
 
 function show(kind, text) {
   const m = $('msg');
+  // 上一条提示可能挂着一个正在倒数的「回到看板」，这里要连它一起作废 ——
+  // 否则你按了「体检」，页面却在 2 秒后被上一次保存的倒数带走了
+  clearInterval(jumpTimer);
   m.className = 'msg show ' + kind;
   m.textContent = ({ ok: '● ', warn: '◆ ', err: '■ ' }[kind] || '') + text;
+}
+
+// 配好了就把人送回看板 —— 这个页面一辈子只用一次，配完还停在这儿没意义。
+//
+// 但不立刻跳：刚才那条「最近 7 天拿到多少条记录」是要给人看的，
+// 跳太快等于没显示过。留几秒，并且留一个能中断的出口 ——
+// 配完想接着体检、或者想换个账号再配一次的人，被强制弹走会很恼火。
+function jumpBackToDashboard(sec = 4) {
+  const bar = document.createElement('div');
+  bar.className = 'jump';
+  const text = document.createElement('span');
+  const stay = document.createElement('button');
+  stay.type = 'button';
+  stay.className = 'ghost';
+  stay.textContent = '留在本页';
+  bar.append(text, stay);
+  $('msg').appendChild(bar);
+
+  const paint = () => { text.textContent = `${sec} 秒后回到看板…`; };
+  paint();
+
+  stay.addEventListener('click', () => {
+    clearInterval(jumpTimer);
+    bar.remove();
+  });
+
+  jumpTimer = setInterval(() => {
+    if (--sec > 0) return paint();
+    clearInterval(jumpTimer);
+    location.href = '/';
+  }, 1000);
 }
 
 // fetch 的网络层失败只会抛一句「Failed to fetch」，对使用者等于什么都没说。
@@ -255,6 +310,11 @@ $('form').addEventListener('submit', async e => {
     $('password').value = '';
     $('currentPassword').value = '';
     await loadState();
+
+    // 只有真拿到数据才算「配置正常」，才自动跳回看板。
+    // rows === 0 是个存疑状态 —— 账号错了 OA 也可能只是回个空数组，分辨不出来。
+    // 那条警告必须让人自己读完再决定，不能把他弹走
+    if (body.rows > 0) jumpBackToDashboard();
   } catch (err) {
     show('err', '验证失败：' + explain(err));
   } finally {
@@ -303,7 +363,9 @@ $('clear').addEventListener('click', async () => {
   }
 });
 
-loadState();
+// 跳转不是立刻生效的，这行还会照跑一次。正在跳走时别再发那个注定失败的请求 ——
+// 它只会在页面消失前闪一句"读不到服务状态"，把人往错误的方向引
+if (!redirecting) loadState();
 </script>
 </body>
 </html>
