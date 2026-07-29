@@ -1,0 +1,15 @@
+{
+  "_说明": "复制本文件为 config.json 再填。config.json 已在 .gitignore 里，密码不会进版本库。",
+
+  "baseUrl": "http://192.168.0.249/RibaoOA/api/OAWebApi",
+  "userCode": "<OA 账号>",
+  "password": "<OA 密码>",
+
+  "_口径": "分子 = 接口4 ProductionInspectionList 的不良数；分母 = 接口5 InspectionDailyReportList 的检验数量",
+
+  "days": 14,
+  "target": 98.5,
+  "minSample": 200,
+  "topGroups": 6,
+  "refreshMs": 300000
+}

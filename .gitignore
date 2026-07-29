@@ -4,9 +4,11 @@ node_modules/
 
 # ── 密钥与环境配置（最重要，绝对不能提交）──────
 # 数据库密码、API Token 一旦提交，即使后来删掉也留在 Git 历史里
+# config.json 里有 OA 账号密码 —— 只提交 config.example.json
 .env
 .env.local
 config.local.js
+config.json
 
 # ── 日志 ────────────────────────────────────
 *.log
