@@ -56,6 +56,8 @@
   .state .who { font-family: ui-monospace, Consolas, monospace; color: var(--ink); }
 
   label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--ink-2); }
+  .hint { font-size: 12.5px; line-height: 1.55; color: var(--ink-muted); }
+  .hint strong { color: var(--ink-2); font-weight: 600; }
   input {
     font: inherit;
     padding: 10px 12px;
@@ -140,12 +142,15 @@
           <input id="password" name="password" type="password" autocomplete="current-password" required>
         </label>
         <label id="currentWrap" hidden>
-          当前密码（更换账号时需要验证）
+          现有账号的密码
           <input id="currentPassword" type="password" autocomplete="current-password">
+          <span class="hint">只有<strong>换成另一个账号</strong>时才需要填。
+            重新验证现有账号的话，上面用它自己的密码提交就行。</span>
         </label>
 
         <div class="row">
           <button type="submit" id="submit">验证并保存</button>
+          <button type="button" class="ghost" id="verify" hidden>体检现有账号</button>
           <button type="button" class="ghost" id="clear" hidden>清除账号</button>
         </div>
       </div>
@@ -195,9 +200,12 @@ async function loadState() {
       st.querySelector('.who').textContent = cfg.userCode;
       $('userCode').value = cfg.userCode;
       $('currentWrap').hidden = false;
-      $('currentPassword').required = true;
+      // 不设 required —— 重新验证现有账号时用不着填，
+      // 设成必填会把「我只想验证一下」的人挡在表单外
+      $('currentPassword').required = false;
+      $('verify').hidden = false;
       $('clear').hidden = false;
-      $('submit').textContent = '验证并更换';
+      $('submit').textContent = '验证并保存';
     } else {
       st.innerHTML = `<span class="icon" style="color:var(--warning)">◆</span>
         <span>还没配置账号，看板现在取不到数</span>`;
@@ -234,7 +242,24 @@ $('form').addEventListener('submit', async e => {
     show('err', '验证失败：' + err.message);
   } finally {
     $('submit').disabled = false;
-    $('submit').textContent = isConfigured ? '验证并更换' : '验证并保存';
+    $('submit').textContent = '验证并保存';
+  }
+});
+
+// 体检：拿服务器上已存的账号跑一次，不改任何配置，也不用重新输密码
+$('verify').addEventListener('click', async () => {
+  $('verify').disabled = true;
+  $('verify').textContent = '正在体检…';
+  try {
+    const res = await fetch('/api/verify', { method: 'POST' });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    show(body.rows === 0 ? 'warn' : 'ok', body.note);
+  } catch (err) {
+    show('err', '体检失败：' + err.message);
+  } finally {
+    $('verify').disabled = false;
+    $('verify').textContent = '体检现有账号';
   }
 });
 

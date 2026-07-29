@@ -471,9 +471,18 @@ async function handleLogin(req, res) {
   }
 
   // 已经配过账号了，改账号必须先验证当前密码 ——
-  // 否则任何能访问这个端口的人都能把服务账号换掉
-  if (configured() && body.currentPassword !== cfg.password) {
-    return sendJSON(res, 403, { error: '已配置账号。要更换请先填写当前密码。' });
+  // 否则任何能访问这个端口的人都能把服务账号换掉。
+  //
+  // 但「知道当前密码」有两种证明方式：填在 currentPassword 里，
+  // 或者提交的 password 本身就是当前密码（重新验证同一个账号的情形）。
+  // 只认前一种的话，用同样的账号密码重新验证一次都会被 403 挡住 ——
+  // 页面上账号栏本来就自动填好了，用户会以为是登不上。
+  const knowsCurrent = body.currentPassword === cfg.password || password === cfg.password;
+  if (configured() && !knowsCurrent) {
+    return sendJSON(res, 403, {
+      error: `已配置账号 ${cfg.userCode}。要换成别的账号，请在「当前密码」里填写现有账号的密码。`
+             + '（如果只是想重新验证现有账号，直接用它自己的密码提交即可。）',
+    });
   }
 
   try {
@@ -491,6 +500,28 @@ async function handleLogin(req, res) {
   } catch (err) {
     console.error('OA 账号验证失败:', err.message);
     sendJSON(res, 401, { error: err.message });
+  }
+}
+
+// 用已经存好的账号跑一次验证，不改任何配置。
+// 「我的账号还能用吗」应该有个不需要重新输密码的答案
+async function handleVerify(req, res) {
+  if (!configured()) {
+    return sendJSON(res, 400, { error: '还没配置账号' });
+  }
+  try {
+    const check = await verifyCredentials(cfg.userCode, cfg.password);
+    sendJSON(res, 200, {
+      ok: true,
+      userCode: cfg.userCode,
+      rows: check.rows,
+      note: check.rows === 0
+        ? `连通了，但 ${check.from} ~ ${check.to} 一条记录都没有。可能是这几天确实没检验，也可能是账号没有该数据的权限。`
+        : `账号正常，最近 7 天拿到 ${check.rows} 条检验日报记录。`,
+    });
+  } catch (err) {
+    console.error('已存账号验证失败:', err.message);
+    sendJSON(res, 502, { error: err.message });
   }
 }
 
@@ -513,6 +544,7 @@ function serve() {
     console.log(`[${new Date().toLocaleTimeString('zh-CN')}] ${req.method} ${url}`);
 
     if (req.method === 'POST' && url === '/api/login')  return handleLogin(req, res);
+    if (req.method === 'POST' && url === '/api/verify') return handleVerify(req, res);
     if (req.method === 'POST' && url === '/api/logout') return handleLogout(req, res);
 
     // 只回账号名和配置状态，密码绝不出服务端
