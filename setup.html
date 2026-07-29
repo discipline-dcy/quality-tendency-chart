@@ -189,6 +189,23 @@ function show(kind, text) {
   m.textContent = ({ ok: '● ', warn: '◆ ', err: '■ ' }[kind] || '') + text;
 }
 
+// fetch 的网络层失败只会抛一句「Failed to fetch」，对使用者等于什么都没说。
+// 这类错误的意思是「请求根本没送到服务器」，和服务器拒绝是两回事，
+// 排查方向也完全不同 —— 所以在这里翻译成人能照着做的话
+function explain(err) {
+  const netFail = err instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(err.message);
+  if (!netFail) return err.message;
+
+  if (location.protocol === 'file:') {
+    return '这个页面是直接双击文件打开的（地址栏是 file:// 开头），'
+         + '这样发不出请求。请先运行 node server.js，再用浏览器打开 http://localhost:3200/setup';
+  }
+  return `连不上服务（${location.origin}），请求没能送到服务器。请依次确认：`
+       + '① server.js 还在运行吗（命令行窗口是不是关了、或正在重启）；'
+       + `② 地址栏的端口是不是 3200；`
+       + '③ 如果这台电脑不是跑服务的那台，localhost 指的是你自己的机器，要换成服务器的内网 IP。';
+}
+
 async function loadState() {
   try {
     const cfg = await (await fetch('/api/config', { cache: 'no-store' })).json();
@@ -212,7 +229,7 @@ async function loadState() {
     }
   } catch (err) {
     $('state').innerHTML = `<span class="icon" style="color:var(--critical)">■</span>
-      <span>读不到服务状态，服务可能没在跑</span>`;
+      <span>读不到服务状态 —— server.js 可能没在运行，或地址/端口不对</span>`;
   }
 }
 
@@ -239,7 +256,7 @@ $('form').addEventListener('submit', async e => {
     $('currentPassword').value = '';
     await loadState();
   } catch (err) {
-    show('err', '验证失败：' + err.message);
+    show('err', '验证失败：' + explain(err));
   } finally {
     $('submit').disabled = false;
     $('submit').textContent = '验证并保存';
@@ -256,7 +273,7 @@ $('verify').addEventListener('click', async () => {
     if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
     show(body.rows === 0 ? 'warn' : 'ok', body.note);
   } catch (err) {
-    show('err', '体检失败：' + err.message);
+    show('err', '体检失败：' + explain(err));
   } finally {
     $('verify').disabled = false;
     $('verify').textContent = '体检现有账号';
@@ -282,7 +299,7 @@ $('clear').addEventListener('click', async () => {
     $('clear').hidden = true;
     await loadState();
   } catch (err) {
-    show('err', '清除失败：' + err.message);
+    show('err', '清除失败：' + explain(err));
   }
 });
 
