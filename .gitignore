@@ -22,6 +22,8 @@ npm-debug.log*
 Thumbs.db
 desktop.ini
 .DS_Store
+# WPS / Office 打开文档时生成的锁文件，关掉就没了，别提交
+~$*
 
 # ── 构建产物 ────────────────────────────────
 dist/
