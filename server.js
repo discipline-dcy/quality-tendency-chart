@@ -439,7 +439,13 @@ function sendFile(res, file, type) {
       res.end(`500 找不到 ${file}`);
       return;
     }
-    res.writeHead(200, { 'Content-Type': type });
+    res.writeHead(200, {
+      'Content-Type': type,
+      // 页面必须每次回源。改了代码却因为浏览器缓存看到旧页面，
+      // 排查起来会以为是后端坏了 —— 已经踩过一次。
+      // 对车间大屏更要紧：那块屏几个月不重启，缓存住的旧页面会一直挂着
+      'Cache-Control': 'no-cache, must-revalidate',
+    });
     res.end(data);
   });
 }
