@@ -431,13 +431,19 @@ async function probe() {
 // ═══════════════════════════════════════════════════════════════
 // HTTP 服务
 // ═══════════════════════════════════════════════════════════════
-function sendJSON(res, code, obj) {
-  res.writeHead(code, {
+function sendJSON(res, code, obj, extraHeaders) {
+  const headers = {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
-  });
+  };
+  if (extraHeaders) Object.assign(headers, extraHeaders);
+  res.writeHead(code, headers);
   res.end(JSON.stringify(obj));
 }
+
+// 只给 /api/quality 用。不往 /api/config、/api/login 上加 ——
+// 那两个回的是账号名和登录结果，没有理由让任意来源读得到
+const QUALITY_CORS = { 'Access-Control-Allow-Origin': '*' };
 
 function sendFile(res, file, type) {
   fs.readFile(path.join(__dirname, file), (err, data) => {
@@ -595,30 +601,40 @@ function serve() {
     }
 
     if (url === '/api/quality') {
+      // 错误响应也必须带 CORS 头。看板可能是用 file:// 打开、跨机器取数的
+      // （见 quality-maxhub.html 的 ?server= 用法），少了这个头，浏览器会
+      // 把 503/502 整个拦掉，页面读不到 needSetup —— 于是「去 /setup 配账号」
+      // 这条正确的引导永远不显示，只会报成一个含糊的连接异常
       if (!configured()) {
         return sendJSON(res, 503, {
           error: '还没配置 OA 账号',
           needSetup: true,
           setupUrl: '/setup',
-        });
+        }, QUALITY_CORS);
       }
       try {
         const data = await readQuality();
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',
-          'Access-Control-Allow-Origin': '*',
           'Cache-Control': 'no-store',
+          ...QUALITY_CORS,
         });
         res.end(JSON.stringify(data));
       } catch (err) {
         console.error('取数失败:', err.message);
-        sendJSON(res, 502, { error: err.message });
+        sendJSON(res, 502, { error: err.message }, QUALITY_CORS);
       }
       return;
     }
 
     if (url === '/setup' || url === '/setup.html') {
       return sendFile(res, 'setup.html', 'text/html; charset=utf-8');
+    }
+    // 车间大屏版：同一份数据、同一套口径，只是排版和 JS 降级到老内核，
+    // 并处理了安卓浏览器的后台节流、地址栏偷高度、下拉刷新等问题。
+    // 和 / 上的原版并存 —— 大屏走 /board，电脑上仍看 /，两版可以对着比
+    if (url === '/board' || url === '/quality-maxhub.html') {
+      return sendFile(res, 'quality-maxhub.html', 'text/html; charset=utf-8');
     }
     if (url === '/' || url === '/quality.html') {
       return sendFile(res, 'quality.html', 'text/html; charset=utf-8');
@@ -641,6 +657,7 @@ function serve() {
     } else {
       console.log('  ⚠ 没找到内网 IP，这台机器可能没连网，其他电脑打不开。');
     }
+    console.log(`  车间大屏：在上面任一地址后加 /board（MAXHUB 安卓适配版）`);
     console.log(`  数据接口：http://localhost:${PORT}/api/quality`);
     if (configured()) {
       console.log(`  OA 账号：${cfg.userCode}（已配置）`);
