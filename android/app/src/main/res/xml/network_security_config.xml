@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 9（API 28）起默认禁止明文 HTTP。server.js 发的是 http://，
+  不开这个的话 WebView 会直接拒绝加载，而且错误信息很不显眼 ——
+  表现为一片空白，很容易误判成"网络不通"。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

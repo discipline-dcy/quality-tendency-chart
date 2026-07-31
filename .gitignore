@@ -33,3 +33,14 @@ desktop.ini
 # ── 构建产物 ────────────────────────────────
 dist/
 build/
+
+# Android 构建产物
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+
+# 导出的看板快照（数据快照，不进版本库；APK 里那份 assets 除外）
+quality-static.html
+qtc-snapshot-*.html
