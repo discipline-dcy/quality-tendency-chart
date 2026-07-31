@@ -200,10 +200,20 @@ public class MainActivity extends Activity {
         if (hasFocus) goImmersive();   // 系统弹过通知栏之后要重新藏回去
     }
 
-    /** 返回键改成刷新。看板场景下退出 App 只会留个桌面在那儿，没有意义。 */
+    /**
+     * 返回键：能回退就回退，回不动了才刷新。
+     *
+     * 早先这里无条件 reload()，结果从看板点进 OA 配置页后按返回是原地重新加载
+     * 同一页，现场反馈是「按了没反应、卡住了」。看板场景下确实不该退出 App
+     * （只会留个桌面在那儿），但也不能把 WebView 的历史栈一起废掉。
+     */
     @Override
     public void onBackPressed() {
-        web.reload();
+        if (web.canGoBack()) {
+            web.goBack();
+        } else {
+            web.reload();
+        }
     }
 
     @Override
