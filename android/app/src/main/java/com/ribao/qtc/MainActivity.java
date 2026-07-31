@@ -37,7 +37,10 @@ public class MainActivity extends Activity {
 
     private static final String PREFS       = "qtc";
     private static final String KEY_URL     = "server_url";
-    private static final String DEFAULT_URL = "http://192.168.10.50/quality-maxhub.html";
+    // 默认地址跟着开发机的内网 IP 走。这台机器保存了十几个自动连接的 WiFi，
+    // 会在 ribao_sale_5g(192.168.30.153) 和 RBzongjingban(192.168.10.50) 之间漫游，
+    // 漫游一次这里就失效一次 —— 所以地址必须能在设备上长按改，不能只靠这个常量。
+    private static final String DEFAULT_URL = "http://192.168.30.153:3200/quality-maxhub.html";
     private static final String OFFLINE_URL = "file:///android_asset/quality-static.html";
 
     /** 降级后重试联网的间隔。比页面自身 60 秒的刷新节奏略长，避免两者打架。 */
