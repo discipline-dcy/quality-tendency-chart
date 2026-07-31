@@ -52,6 +52,15 @@ public class MainActivity extends Activity {
     /** 当前是否处于离线快照状态。只有它为 true 时重试才有意义。 */
     private boolean showingOffline = false;
 
+    /**
+     * 本次启动是否已经弹过地址设置框。
+     *
+     * 连不上时要弹一次让人填地址，否则换台机器部署时，装完只看到一屏离线快照，
+     * 不知道还能长按改地址 —— 这个手势是藏起来的，不主动提示等于没有。
+     * 但只弹第一次：看板平时无人值守，每 90 秒重试失败就弹一个框会没法看。
+     */
+    private boolean promptedThisSession = false;
+
     private final Runnable retryOnline = new Runnable() {
         @Override public void run() {
             if (showingOffline) {
@@ -107,7 +116,15 @@ public class MainActivity extends Activity {
 
         setContentView(web);
         goImmersive();
-        web.loadUrl(serverUrl());
+
+        // 全新安装（还没存过地址）时先问一次。转接给别的机器时，装完第一眼就是
+        // 填地址，不用去猜打包时写死的是谁的 IP。
+        if (!prefs().contains(KEY_URL)) {
+            promptedThisSession = true;
+            showSettings();
+        } else {
+            web.loadUrl(serverUrl());
+        }
     }
 
     private String serverUrl() {
@@ -124,6 +141,11 @@ public class MainActivity extends Activity {
         Toast.makeText(this, "连不上服务器，显示离线快照（数据不会更新）", Toast.LENGTH_LONG).show();
         handler.removeCallbacks(retryOnline);
         handler.postDelayed(retryOnline, RETRY_MS);
+
+        if (!promptedThisSession) {
+            promptedThisSession = true;
+            showSettings();
+        }
     }
 
     private void showSettings() {
@@ -133,7 +155,9 @@ public class MainActivity extends Activity {
 
         new AlertDialog.Builder(this)
                 .setTitle("服务器地址")
-                .setMessage("电脑上运行 server.js 后，启动日志里打印的那个内网地址。")
+                .setMessage("电脑上运行 server.js 后，启动日志里会打印一行内网地址，照抄到这里。\n"
+                        + "换电脑、换网络、IP 变了都在这里改，不用重装 App。\n\n"
+                        + "当前：" + serverUrl())
                 .setView(input)
                 .setPositiveButton("保存并重新加载", (d, w) -> {
                     String url = input.getText().toString().trim();
@@ -149,6 +173,13 @@ public class MainActivity extends Activity {
                     web.loadUrl(OFFLINE_URL);
                 })
                 .setNegativeButton("取消", null)
+                // 首次安装时如果直接取消，WebView 还没 load 过任何东西，会是一片纯黑，
+                // 看着就像 App 崩了。这种情况下退到离线快照，至少屏上有内容。
+                .setOnDismissListener(d -> {
+                    if (web != null && web.getUrl() == null) {
+                        web.loadUrl(OFFLINE_URL);
+                    }
+                })
                 .show();
     }
 
