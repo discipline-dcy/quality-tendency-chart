@@ -119,6 +119,83 @@ http://192.168.30.153:3200/board     ← 换成启动时打印的那个内网 IP
 > Chromium 84 还老，把型号或内核版本告知开发，还有几处 margin 兜底可以补。
 > 想查内核版本：在大屏浏览器里打开 `chrome://version`。
 
+## 大屏 APK（可选）
+
+MAXHUB 自带的「HTML 查看程序」关掉了 JavaScript，页面渲染不出来；自带浏览器
+又有地址栏和标签页，会被人误触。`android/` 下是个 WebView 壳，只做三件事：
+全屏、常亮、用开了 JS 的 WebView 显示看板。
+
+**本地不需要装 JDK / Android SDK / Gradle**（一套 2GB）。构建在 GitHub Actions
+上做：推送 `android/**` 下的改动会自动触发，或者去 Actions 页面手动
+「Run workflow」，跑完在页面底部 Artifacts 下载。
+
+装到大屏：解压得到 `app-release.apk`，U 盘拷过去点击安装。会拦一次，去
+「设置 → 安全 → 允许安装未知来源应用」放行文件管理器。
+
+用法上只有一个手势要记：**长按屏幕**弹出服务器地址输入框。换电脑、换网络、
+IP 变了都在这里改，**不用重新打包**。连不上时会自动退到 APK 内置的离线快照
+（`assets/quality-static.html`，由 `export-static.js` 生成），并每 90 秒重试联网——
+看板宁可显示过期数据也不能白屏，白屏在车间会被当成设备坏了。
+
+> 内置快照是**打包那一刻**的数据，不会自己更新。要刷新得重新导出、拷进
+> `android/app/src/main/assets/`、推送、重新装。所以它只是兜底，正常路径
+> 仍然是连服务器。
+
+## 换台电脑部署
+
+按顺序走，每条都是实际踩过的。
+
+**① 代码分支。** 这些东西都在 `maxhub-board` 上，`git clone` 默认给你的是
+`main`：
+
+```bash
+git clone https://github.com/discipline-dcy/quality-tendency-chart.git
+cd quality-tendency-chart
+git checkout maxhub-board
+```
+
+**② 装 Node。** 当前用 v24.18.0。项目里那个 `.msi` 被 `.gitignore` 排除了，
+克隆拿不到，自己去 nodejs.org 装。
+
+**③ 配 OA 账号。** `config.json` 不进版本库，新机器上一定是空的：
+
+```powershell
+node server.js --set-account <OA账号>
+```
+
+**④ 接对网络。** 最关键的一条，接错网后面全白做。这台机器必须和车间大屏
+在互通的网段上。已知结论：`RBzongjingban`(192.168.10.x) 大屏能连通；
+`ribao_sale_5g`(192.168.30.x) 连不通，3200 和 80 都超时。
+
+**⑤ 放行防火墙。** 第一次 `node server.js` 时 Windows 会弹窗，必须允许，
+而且要勾**当前网络类型**对应的那个。这里的 WLAN 被识别为 `Public`，放行规则
+也必须覆盖 Public，否则本机自测正常、大屏就是连不上。查现有规则：
+
+```powershell
+Get-NetFirewallApplicationFilter | Where-Object { $_.Program -like "*node*" } |
+  ForEach-Object { $_ | Get-NetFirewallRule } | Select-Object DisplayName,Direction,Action,Profile
+```
+
+**⑥ 验证能取到 OA 数据。**
+
+```powershell
+node server.js --probe
+```
+
+注意原开发机是**通过代理软件**访问 `192.168.0.249` 的（实测源地址是 TUN 网卡
+`198.18.0.1`，`ping` 不通但 TCP 通）。新机器如果没装代理，要确认能否直连 OA。
+
+**⑦ 大屏改地址。** 长按屏幕，填 `node server.js` 启动时打印的那行内网地址。
+
+**⑧ 让服务常驻。** 关掉终端服务就停，大屏立刻掉成离线快照。长期用要做开机
+自启——任务计划程序，或放个快捷方式到 `shell:startup`。
+
+> **IP 会变。** DHCP 续租、换网、笔记本漫游到另一个 WiFi 都会换地址，
+> 而大屏那头是记死的。排查「大屏突然连不上」时，**第一件事是确认服务器
+> 当前 IP 还是不是原来那个**——这个坑踩过不止一次。想彻底免维护，
+> 找 IT 做 DHCP 保留，或者申请一个内网 DNS 名（APK 的地址框填域名一样用，
+> 以后换机器只改 DNS 一条记录）。
+
 ## 数据来源
 
 | 角色 | 接口 | 取哪个字段 |
@@ -145,6 +222,10 @@ quality-tendency-chart/
 ├── quality-maxhub.html   同上的车间大屏版（/board），见「车间大屏怎么开」
 ├── setup.html            OA 账号配置页（一次性，给运维用）
 ├── server.js             后端：拉两个 OA 接口、聚合、/api/quality
+├── export-snapshot.js    用 Edge 无头模式渲染出自包含快照（数据烤进 HTML）
+├── export-static.js      在上一步基础上剥掉 JS，产出 quality-static.html
+├── android/              大屏 APK 的 WebView 壳，见「大屏 APK」
+├── .github/workflows/    GitHub Actions：云端构建 APK，本地不用装 Android SDK
 ├── config.example.json   可调参数说明（config.json 含密码，不进版本库）
 ├── docs/设计方案.md       完整设计说明与待确认口径
 ├── .gitignore
