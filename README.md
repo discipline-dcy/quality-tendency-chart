@@ -145,13 +145,11 @@ IP 变了都在这里改，**不用重新打包**。连不上时会自动退到 
 
 按顺序走，每条都是实际踩过的。
 
-**① 代码分支。** 这些东西都在 `maxhub-board` 上，`git clone` 默认给你的是
-`main`：
+**① 拉代码。** `main` 上就是完整的，不用切分支：
 
 ```bash
 git clone https://github.com/discipline-dcy/quality-tendency-chart.git
 cd quality-tendency-chart
-git checkout maxhub-board
 ```
 
 **② 装 Node。** 当前用 v24.18.0。项目里那个 `.msi` 被 `.gitignore` 排除了，
