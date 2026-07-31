@@ -13,8 +13,28 @@
 node server.js       # 没配账号也能启动
 ```
 
-然后在**电脑上**打开 <http://localhost:3200/setup>，输一次 OA 账号密码。
-服务端会拿真实接口试拉一次数据来验证，通过后存进 `config.json`。
+配 OA 账号有三种方式，都会存进 `config.json`：
+
+```bash
+# ① 命令行（推荐）——不用浏览器，回车后再输密码
+node server.js --set-account 10639
+
+# ② 直接编辑 config.json，照 config.example.json 填 userCode / password
+
+# ③ 浏览器打开 http://localhost:3200/setup 登录一次
+```
+
+①③ 都会先拿真实接口试拉一次数据做验证，通过了才写文件；②不验证，
+填错要等启动后才发现。转接到别的机器时优先用 ①——那台机器上未必有
+顺手的浏览器，而配账号是部署的第一步，第一步不该依赖浏览器。
+
+不想让密码落盘的话，用环境变量，优先级高于 `config.json`：
+
+```bash
+set OA_USER_CODE=10639
+set OA_PASSWORD=xxxxxx
+node server.js
+```
 
 **只需要配这一次。** 之后车间大屏一直用这个账号取数，不需要登录——
 大屏是无人值守的 kiosk，没键盘也没人操作，它自己没法登录。

@@ -1,5 +1,7 @@
 {
   "_说明": "复制本文件为 config.json 再填。config.json 已在 .gitignore 里，密码不会进版本库。",
+  "_配账号的三种方式": "① node server.js --set-account <账号>（推荐，会先向 OA 验证再写入，不用浏览器）② 直接改本文件的 userCode/password ③ 浏览器打开 /setup 登录",
+  "_环境变量": "OA_USER_CODE / OA_PASSWORD / OA_BASE_URL 优先级高于本文件，适合不想把密码落盘的场合",
 
   "baseUrl": "http://192.168.0.249/RibaoOA/api/OAWebApi",
   "userCode": "<OA 账号>",
