@@ -185,8 +185,22 @@ node server.js --probe
 
 **⑦ 大屏改地址。** 长按屏幕，填 `node server.js` 启动时打印的那行内网地址。
 
-**⑧ 让服务常驻。** 关掉终端服务就停，大屏立刻掉成离线快照。长期用要做开机
-自启——任务计划程序，或放个快捷方式到 `shell:startup`。
+**⑧ 让服务常驻。** 关掉终端服务就停，大屏立刻掉成离线快照。跑一次这个就行：
+
+```powershell
+.\install-autostart.ps1        # 注册开机自启并立即启动
+.\install-autostart.ps1 -Off   # 取消自启并停掉服务
+```
+
+注册的是**当前用户的登录触发任务**，不需要管理员权限，无控制台窗口，
+崩溃后 1 分钟自动重试（最多 3 次）。装完会把大屏该填的完整网址打印出来。
+
+> 用任务计划而不是往 `shell:startup` 放快捷方式，有两个实际原因：快捷方式
+> 会在桌面留一个黑框控制台，谁顺手关掉服务就没了；而且快捷方式没有
+> 「崩了自动重启」，看板是无人值守的，这条比省事重要。
+>
+> 代价是**必须有人登录进桌面**服务才会起来。做成免登录的系统服务要存密码，
+> 不划算——车间那台机器本来就常年登录着。
 
 > **IP 会变。** DHCP 续租、换网、笔记本漫游到另一个 WiFi 都会换地址，
 > 而大屏那头是记死的。排查「大屏突然连不上」时，**第一件事是确认服务器
@@ -222,6 +236,7 @@ quality-tendency-chart/
 ├── server.js             后端：拉两个 OA 接口、聚合、/api/quality
 ├── export-snapshot.js    用 Edge 无头模式渲染出自包含快照（数据烤进 HTML）
 ├── export-static.js      在上一步基础上剥掉 JS，产出 quality-static.html
+├── install-autostart.ps1 注册/取消开机自启（任务计划程序，无窗口，崩溃自重启）
 ├── android/              大屏 APK 的 WebView 壳，见「大屏 APK」
 ├── .github/workflows/    GitHub Actions：云端构建 APK，本地不用装 Android SDK
 ├── config.example.json   可调参数说明（config.json 含密码，不进版本库）
