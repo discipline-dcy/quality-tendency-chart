@@ -1,0 +1,32 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.ribao.qtc'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.ribao.qtc"
+        // minSdk 21：车间那台 MAXHUB 的安卓版本未知，21 能覆盖到 Android 5.0，
+        // 再低的机器现在也跑不动 WebView 里的这套图表了。
+        minSdk 21
+        targetSdk 34
+        versionCode 5
+        versionName "1.4"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // 用 debug 签名给 release 也签一次。内部大屏自己装，不上应用商店，
+            // 没必要维护正式密钥库；未签名的 APK 安卓根本不让装。
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

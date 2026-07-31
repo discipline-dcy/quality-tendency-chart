@@ -1,0 +1,43 @@
+name: 构建看板 APK
+
+# 本地那台 Windows 上没有 JDK、没有 Android SDK、没有 Gradle，装一套要 2GB。
+# GitHub 的 ubuntu runner 自带这些，所以构建放到云端做，本地零安装。
+on:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:      # 允许在 Actions 页面手动点「Run workflow」
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'      # AGP 8.x 要求 17，用 11 会直接报不兼容
+
+      - name: 装 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 装 Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: 构建 release APK
+        working-directory: android
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: 质量趋势看板-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 30

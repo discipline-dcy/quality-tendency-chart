@@ -188,17 +188,11 @@
   th { color: var(--ink-muted); font-weight: 500; }
 
   .ft { margin-top: .9rem; font-size: .95rem; color: var(--ink-muted); display: flex; flex-wrap: wrap; }
-  .ft span, .ft a { margin-right: 1.5em; }
+  .ft span { margin-right: 1.5em; }
 
-  /* 页面里唯一的链接（去 /setup 配账号）。
-     不用蓝色 —— 这套配色里蓝是序列色、红黄绿是状态色，都有各自的含义，
-     借过来当链接色会让「蓝＝数据线」这条规则出现例外。改用下划线 + 提亮一档 */
-  a { color: var(--ink-2); text-decoration: underline; text-underline-offset: .25em; }
-  a:active { color: var(--ink); }
-  /* 不知道服务器在哪时链接会被摘掉 href —— 那就别再画得像能点 */
-  a:not([href]) { text-decoration: none; }
-  /* 提示条自带背景色，链接在上面跟着正文走就行，再变色只会更难认 */
-  .banner a { color: inherit; font-weight: 600; }
+  /* 这里原来有一组链接样式，服务的是页脚那个「配置 OA 账号」入口。
+     入口去掉之后整个页面一个 <a> 都没有了 —— 大屏是只读看板，本来也不该有
+     任何可点的东西。样式一并删掉，别留着误导后来改这个文件的人。 */
 </style>
 </head>
 <body>
@@ -256,10 +250,9 @@
     <span id="source">—</span>
     <span id="lastUpdate">尚未获取数据</span>
     <span id="serverTag"></span>
-    <!-- 通过 http://<服务器内网IP>:3200/board 打开时走相对路径 —— 页面从哪台机器
-         取来就向哪台机器要数，在大屏和任何人的电脑上都对。绝不能写死 localhost：
-         那在大屏上指的是平板自己。只有 file:// 直接打开时才由 JS 换成显式地址 -->
-    <a href="/setup" data-setup>配置 OA 账号</a>
+    <!-- 这里原来有个「配置 OA 账号」的链接，去掉了。大屏是挂墙上用遥控器操作的，
+         根本没法输账号密码；而且实测点进去之后按返回会退不回来。账号现在一律
+         在服务端配：node server.js --set-account <账号>。 -->
   </div>
 
 </div>
@@ -935,14 +928,13 @@ function load() {
       failCount = 0;
       render(withRange(DEMO, '示例数据（尚未配置 OA 账号）'));
       var b = document.getElementById('bannerErr');
-      // 这里用 innerHTML 是因为要塞一个链接，且整段文案全是写死的常量，
-      // 没有任何来自接口或用户的内容。下面那条报错横幅带 err.message，
-      // 那个必须继续用 textContent
-      b.innerHTML = '◆ 还没配置 OA 账号，下面显示的是示例数据。'
-        + '请在电脑上打开 <a href="/setup" data-setup>账号配置页</a> 登录一次'
+      // 改用 textContent：这条提示以前塞了个去 /setup 的链接，但大屏上点不动
+      // 也输不了密码，等于把人引到死路上。现在直接把服务端那条命令写出来，
+      // 让看到的人知道该去哪台机器上敲什么。
+      b.textContent = '◆ 还没配置 OA 账号，下面显示的是示例数据。'
+        + '请在跑 server.js 的那台电脑上执行：node server.js --set-account <OA账号>'
         + '（只需一次，之后大屏一直用这个账号取数）。';
       b.className = 'banner err show';
-      fixSetupLinks();
       fit();
       return;
     }
@@ -977,26 +969,12 @@ function load() {
   });
 }
 
-// 双击打开看板时地址栏是 file://，/setup 这个相对链接会指向 file:///setup —— 死链。
-// 通过 http 打开时不动它：那时相对路径本来就是对的，而且比写死地址更对 ——
-// 大屏走的是服务器内网 IP，写死会把人送到大屏自己那台机器上
-function fixSetupLinks() {
-  if (location.protocol !== 'file:') return;
-  var as = document.querySelectorAll('a[data-setup]'), i;
-  for (i = 0; i < as.length; i++) {
-    // 连服务器在哪都不知道的时候，宁可摘掉链接，也别留一个点了没反应的死链
-    if (SERVER) as[i].href = SERVER + '/setup';
-    else as[i].removeAttribute('href');
-  }
-}
-
 // 页脚标出这块屏到底在向谁要数 —— 只有 file:// 跨机器取数时才有歧义，
 // 通过 http 打开时地址栏已经写着了，不用重复
 function showServerTag() {
   document.getElementById('serverTag').textContent = SERVER ? '数据源 ' + SERVER : '';
 }
 
-fixSetupLinks();
 showServerTag();
 
 function tickClock() {

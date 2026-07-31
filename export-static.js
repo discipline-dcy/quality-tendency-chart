@@ -128,14 +128,13 @@ function fluidRootFontSize(html) {
 //    必须在删 script 之后跑，否则会误伤脚本源码里的同名字符串
 function truthfulFooter(html) {
   let n = 0;
-  let out = html.replace('数据每 60 秒自动刷新', () => {
+  const out = html.replace('数据每 60 秒自动刷新', () => {
     n++;
     return '静态导出 · 不会自动刷新';
   });
-  out = out.replace(/<a\b[^>]*\bdata-setup\b[^>]*>([\s\S]*?)<\/a>/gi, (m, inner) => {
-    n++;
-    return '<span>' + inner + '（需在电脑上打开）</span>';
-  });
+  // 这里原来还要剥掉页脚那个「配置 OA 账号」链接。该入口已从 quality-maxhub.html
+  // 删除（账号改在服务端配：node server.js --set-account），页面现在一个 <a>
+  // 都没有，这段替换匹配不到任何东西，删了。
   return { html: out, count: n };
 }
 

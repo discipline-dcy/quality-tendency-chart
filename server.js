@@ -43,6 +43,7 @@ const PORT = Number(
 // 「对内网开放」是有意为之，别哪天被当成疏漏改回 localhost。
 const HOST = '0.0.0.0';
 const PROBE = process.argv.includes('--probe');
+const SET_ACCOUNT = process.argv.includes('--set-account');
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 
 // ═══════════════════════════════════════════════════════════════
@@ -69,14 +70,36 @@ const DEFAULTS = {
   refreshMs: 300000,    // 向 OA 取数的间隔，默认 5 分钟
 };
 
+// 环境变量优先级最高，其次 config.json，最后 DEFAULTS。
+// 有环境变量这条路，是因为转接到别的机器时未必方便编辑文件 ——
+// 临时起一次服务只要 `set OA_USER_CODE=... && node server.js` 就行，
+// 而且账号不会落到磁盘上。
+function envOverrides() {
+  const out = {};
+  if (process.env.OA_USER_CODE) out.userCode = process.env.OA_USER_CODE.trim();
+  if (process.env.OA_PASSWORD)  out.password = process.env.OA_PASSWORD;
+  if (process.env.OA_BASE_URL)  out.baseUrl  = process.env.OA_BASE_URL.trim();
+  return out;
+}
+
 function loadConfig() {
+  let raw = {};
   try {
-    const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    return { ...DEFAULTS, ...raw };
+    raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   } catch (err) {
-    if (err.code !== 'ENOENT') console.warn('config.json 读取失败，用默认值：', err.message);
-    return { ...DEFAULTS };
+    if (err.code === 'ENOENT') {
+      // 文件不存在是正常情况（首次部署、或全用环境变量），不该报警
+    } else if (err instanceof SyntaxError) {
+      // JSON 写坏了必须说清楚。以前这里只打一句「读取失败」，
+      // 然后服务照常启动、看板显示"没配账号"，很容易被当成账号问题查半天。
+      console.error('✗ config.json 不是合法 JSON：' + err.message);
+      console.error('  常见原因：少了逗号、多了尾逗号、用了中文引号。');
+      console.error('  这次先用默认值启动，账号会被当成未配置。');
+    } else {
+      console.warn('config.json 读取失败，用默认值：', err.message);
+    }
   }
+  return { ...DEFAULTS, ...raw, ...envOverrides() };
 }
 
 let cfg = loadConfig();
@@ -406,6 +429,54 @@ async function verifyCredentials(userCode, password) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// --set-account：在服务端配账号，不用开浏览器
+//
+//   node server.js --set-account 10639
+//
+// 存在的理由：/setup 那个页面要有浏览器、要服务先跑起来、还得知道端口。
+// 转接到车间那台机器时这几样都未必顺手，而配账号是部署的第一步 ——
+// 第一步就依赖浏览器不合理。
+//
+// 密码走 stdin 而不是命令行参数：参数会留在 shell 历史里，Windows 上
+// 还能被别的进程从命令行看到，等于把密码写在了明处。
+// ═══════════════════════════════════════════════════════════════
+async function setAccount() {
+  const i = process.argv.indexOf('--set-account');
+  const userCode = String(process.argv[i + 1] || '').trim();
+
+  if (!userCode || userCode.startsWith('--')) {
+    console.error('用法：node server.js --set-account <OA账号>');
+    console.error('     回车后再输密码（不回显在命令行参数里）。');
+    process.exit(1);
+  }
+
+  const readline = require('readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const password = await new Promise(resolve => {
+    rl.question(`OA 账号 ${userCode} 的密码：`, ans => { rl.close(); resolve(ans); });
+  });
+
+  if (!password) {
+    console.error('✗ 密码为空，没有改动。');
+    process.exit(1);
+  }
+
+  process.stdout.write('正在向 OA 验证…');
+  try {
+    const check = await verifyCredentials(userCode, password);
+    console.log(`\r✓ 验证通过（试取 ${check.rows} 条记录，区间 ${check.from} ~ ${check.to}）`);
+  } catch (err) {
+    console.log('\r✗ 验证失败：' + err.message);
+    console.error('  账号密码没有写入 config.json。');
+    process.exit(1);
+  }
+
+  saveConfig({ userCode, password });
+  console.log(`✓ 已写入 ${CONFIG_PATH}`);
+  console.log('  现在可以 `node server.js` 正常启动了。');
+}
+
+// ═══════════════════════════════════════════════════════════════
 // --probe：把真实字段名打出来
 // ═══════════════════════════════════════════════════════════════
 async function probe() {
@@ -701,8 +772,10 @@ function serve() {
       console.log(`  取数间隔：${cfg.refreshMs / 1000} 秒（大屏轮询走缓存，不直接压 OA）`);
     } else {
       console.log('');
-      console.log('  ⚠ 还没配 OA 账号，看板暂时取不到数。');
-      console.log(`  请打开 http://localhost:${PORT}/setup 登录一次（只需一次）。`);
+      console.log('  ⚠ 还没配 OA 账号，看板暂时取不到数。三选一：');
+      console.log('    1) 命令行：node server.js --set-account <OA账号>   ← 不用浏览器');
+      console.log('    2) 编辑 config.json，填 userCode / password（照 config.example.json 抄）');
+      console.log(`    3) 浏览器打开 http://localhost:${PORT}/setup 登录一次`);
     }
     console.log('  按 Ctrl+C 停止');
     console.log('─'.repeat(56));
@@ -710,4 +783,5 @@ function serve() {
 }
 
 if (PROBE) probe().catch(err => { console.error(err.message); process.exit(1); });
+else if (SET_ACCOUNT) setAccount().catch(err => { console.error(err.message); process.exit(1); });
 else serve();
