@@ -28,7 +28,9 @@ node server.js       # 没配账号也能启动
 
 ```
   内网访问（大屏和其他电脑用这个）：
-    http://192.168.99.15:3200    ← WLAN
+    http://192.168.30.153:3200    ← WLAN
+  车间大屏（MAXHUB 安卓适配版）：
+    http://192.168.30.153:3200/quality-maxhub.html    ← WLAN
 ```
 
 注意 IP 是**跑服务那台机器**的，不是你自己那台。在别人的电脑上打
@@ -64,6 +66,39 @@ node server.js       # 没配账号也能启动
 折线图的代码量比接一个图表库的配置项还少，而且不用担心 MAXHUB 大屏上的
 老浏览器内核跑不动。
 
+## 车间大屏怎么开
+
+大屏用 **`/board`**，不是 `/`：
+
+```
+http://192.168.30.153:3200/board     ← 换成启动时打印的那个内网 IP
+```
+
+`quality-maxhub.html` 和 `quality.html` **是同一块看板**——同一个
+`/api/quality`、同一套口径、同一批设计决策，一个数字都不差。区别只在于它
+按 MAXHUB 的安卓浏览器做了适配：
+
+- 排版从 `clamp()` + `vw` 改成整体按比例缩放。`clamp` 要 Chromium 79，
+  而 MAXHUB 常见的安卓 8/9 内核是 58/66，整条声明会作废；且 `clamp` 有上限，
+  4K 面板上字号封顶后相对屏幕反而偏小
+- flex `gap`（Chromium 84）全部换成 margin，`flatMap`、对象展开、
+  `append(a,b)`、`async/await` 一并降级——整体基线压到 Chromium 49
+- SVG 的 `width`/`height` 由 JS 量出来写死。老 WebView 上 `height:auto`
+  会算成 0 或 150px
+- 时间和千分位手写。`toLocaleTimeString('zh-CN')` 依赖设备 ICU，
+  不同机器可能给 `14:23:07`，也可能给 `下午2:23:07`
+- 切后台/息屏后定时器会被安卓节流甚至暂停，时钟和轮询都会停且不自纠——
+  监听 `visibilitychange`，回前台立刻补一次
+- 关掉下拉刷新和双击缩放（手指一划就重载页面），首次触摸自动进全屏
+  （地址栏在偷高度），并尝试 `wakeLock` 阻止息屏
+
+**两版是并存的**，`/` 上的原版一点没动。先在大屏上跑一段 `/board`，确认没
+问题再决定要不要合并成一个。
+
+> 如果 `/board` 打开后卡片挤成一坨没有间距，说明这台 MAXHUB 的内核比
+> Chromium 84 还老，把型号或内核版本告知开发，还有几处 margin 兜底可以补。
+> 想查内核版本：在大屏浏览器里打开 `chrome://version`。
+
 ## 数据来源
 
 | 角色 | 接口 | 取哪个字段 |
@@ -87,6 +122,7 @@ node server.js       # 没配账号也能启动
 ```
 quality-tendency-chart/
 ├── quality.html          看板页面：KPI + 趋势图 + 小倍数 + 表格视图
+├── quality-maxhub.html   同上的车间大屏版（/board），见「车间大屏怎么开」
 ├── setup.html            OA 账号配置页（一次性，给运维用）
 ├── server.js             后端：拉两个 OA 接口、聚合、/api/quality
 ├── config.example.json   可调参数说明（config.json 含密码，不进版本库）

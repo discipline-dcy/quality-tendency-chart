@@ -2,6 +2,11 @@
 # 体积大且可以靠 package.json 重新安装，不进版本库
 node_modules/
 
+# ── 安装包 ──────────────────────────────────
+# 给服务器装 Node 用的 node-vXX-x64.msi 放在目录里方便拷贝，
+# 但它有几十 MB，进了版本库就永远留在 Git 历史里删不掉
+*.msi
+
 # ── 密钥与环境配置（最重要，绝对不能提交）──────
 # 数据库密码、API Token 一旦提交，即使后来删掉也留在 Git 历史里
 # config.json 里有 OA 账号密码 —— 只提交 config.example.json

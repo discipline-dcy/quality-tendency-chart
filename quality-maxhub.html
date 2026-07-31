@@ -1,0 +1,1069 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta http-equiv="cache-control" content="no-cache, must-revalidate">
+<meta name="format-detection" content="telephone=no,date=no,address=no,email=no">
+<title>质量趋势</title>
+<style>
+  /* ═══════════════════════════════════════════════════════════
+     MAXHUB 车间大屏版 —— 由 quality.html 改造，口径与设计决策一字未动，
+     只做安卓浏览器适配：
+       1. 排版从 clamp()+vw 改为「根字号缩放 + 定尺布局」，见 fit()
+       2. 全部 flex gap 改成 margin
+       3. 时间/千分位手写，不用 toLocale*
+       4. 服务器地址可配（相对路径优先），见 resolveServer()
+       5. 和服务端对表，平板时钟错了会报出来，见 checkClock()
+
+     兼容基线：Chromium 49（覆盖 Android 6 起的所有 MAXHUB）
+     刻意避开：flex gap(84) / clamp(79) / :where(88) / inset(87) /
+              @container(105) / flatMap(69) / 对象展开(60) / append(54)
+     ═══════════════════════════════════════════════════════════ */
+
+  /* 配色 —— 与生产看板同一套 token，暗色单主题
+     车间大屏常年长亮，暗背景眩光小、夜班不刺眼 */
+  :root {
+    --plane:     #0d0d0d;
+    --surface:   #1a1a19;
+    --ink:       #ffffff;
+    --ink-2:     #c3c2b7;
+    --ink-muted: #898781;
+    --hairline:  rgba(255,255,255,0.10);
+
+    /* 图表专用：网格与轴要比数据弱一档，永远是实线 */
+    --grid:      #2c2c2a;
+    --axis:      #383835;
+
+    /* 序列色只有一个 —— 见设计方案「为什么不给不良品数单独配色」 */
+    --series-1:  #3987e5;
+
+    /* 状态色：固定四档，只表示状态，绝不当序列色用 */
+    --good:      #0ca30c;
+    --warning:   #fab219;
+    --critical:  #d03b3b;
+  }
+
+  * { box-sizing: border-box; }
+
+  html {
+    font-size: 16px;              /* JS 会按视口覆盖，见 fit() */
+    background: var(--plane);
+    overscroll-behavior: none;    /* 关下拉刷新：手指往下一划就重载页面 */
+    touch-action: manipulation;   /* 关双击缩放 */
+  }
+
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--ink);
+    /* Android 上原字体栈前四个都不存在，真正命中的是 Noto/思源。
+       把它们提前，避免数字走 Roboto、汉字走 Noto 的混排基线不齐 */
+    font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Droid Sans Fallback",
+                 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;   /* 触摸不闪蓝框 */
+    -webkit-touch-callout: none;                /* 长按不弹「复制/搜索」 */
+    -webkit-user-select: none;
+    user-select: none;
+    overflow-x: hidden;
+  }
+
+  /* 设计基准 1920×1080，1rem = 16 设计像素。
+     不用 vh —— 安卓地址栏会让 100vh 算错，而且滚动时还会变 */
+  .board {
+    width: 120rem;
+    min-height: 67.5rem;
+    margin: 0 auto;
+    padding: 1.75rem;
+  }
+
+  /* ── 页眉 ─────────────────────────────────────────────── */
+  .hd { display: flex; align-items: baseline; margin-bottom: 1rem; }
+  .hd h1 { margin: 0; font-size: 2.2rem; font-weight: 600; letter-spacing: .04em; }
+  .hd .range { font-size: 1.25rem; color: var(--ink-2); margin-left: 1.1rem; }
+  .hd .clock {
+    margin-left: auto;
+    font-size: 1.9rem;
+    color: var(--ink-2);
+    /* 时钟每秒都在变，非等宽数字会让整串左右抖，五米外很显眼 */
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+
+  /* ── 提示条：数据连接异常 / 口径对不上 ─────────────────── */
+  .banner {
+    display: none;
+    padding: .65rem 1rem;
+    border-radius: .4rem;
+    font-size: 1.2rem;
+    line-height: 1.5;
+    margin-bottom: 1rem;
+  }
+  .banner.show { display: block; }
+  .banner.err  { background: rgba(208,59,59,0.15);  border: 1px solid var(--critical); }
+  .banner.warn { background: rgba(250,178,25,0.13); border: 1px solid var(--warning); }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: .6rem;
+    padding: 1.25rem;
+  }
+
+  .label { font-size: 1.1rem; color: var(--ink-muted); margin-bottom: .45rem; }
+
+  /* ── 上半：KPI + 两张主图 ─────────────────────────────── */
+  .top { display: flex; align-items: stretch; }
+  .kpis { width: 21rem; flex: none; margin-right: 1.25rem; display: flex; flex-direction: column; }
+  .kpis .card:first-child { margin-bottom: 1.25rem; flex: 1 1 auto; }
+  .panels { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  .panels .card { margin-bottom: .9rem; }
+  .panels .card:last-child { margin-bottom: 0; }
+
+  /* 本页最大的数字，但仍比主看板的「今日总完成率」小一号 ——
+     整个大屏体系里主数字只能有一个。
+     大号数字用默认比例字形，tabular-nums 会显得松散 */
+  .figure { font-size: 4rem; font-weight: 600; line-height: 1; }
+  .figure .unit { font-size: .38em; font-weight: 500; color: var(--ink-2); margin-left: .1em; }
+  .stat-value { font-size: 2.4rem; font-weight: 600; line-height: 1.1; }
+
+  /* 状态标记：图标形状 + 文字，颜色只是辅助 */
+  .status { font-size: 1.15rem; color: var(--ink-2); margin-top: .55rem; }
+  .status .ic { margin-right: .35em; }
+  .delta {
+    font-size: 1rem; color: var(--ink-2); margin-top: .5rem;
+    font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+  }
+  .delta .ar { margin-right: .3em; }
+
+  .panel-title { font-size: 1.15rem; font-weight: 500; margin: 0 0 .55rem; }
+  .panel-title .sub { font-size: .86em; font-weight: 400; color: var(--ink-muted); margin-left: .8em; }
+
+  /* 图的尺寸由 JS 量出来写死在 width/height 属性上 ——
+     老 WebView 上 svg{height:auto} 会算出 0 或 150px */
+  .plot { line-height: 0; }
+  .plot svg { display: block; overflow: visible; }
+
+  /* ── 下半：小倍数 ─────────────────────────────────────── */
+  .groups { margin-top: 1.25rem; }
+  .sparks { display: flex; flex-wrap: wrap; }
+  .spark-card { min-width: 0; margin-right: .9rem; }
+  .spark-head { display: flex; align-items: baseline; min-width: 0; margin-bottom: .3rem; }
+  .spark-name {
+    font-size: 1.15rem; font-weight: 500;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .spark-rate {
+    margin-left: auto; padding-left: .5em;
+    font-size: 1.4rem; font-weight: 600; white-space: nowrap;
+    font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+  }
+  .spark-status { font-size: .95rem; color: var(--ink-2); margin-top: .3rem; }
+  .spark-status .ic { margin-right: .35em; }
+
+  /* ── 表格视图：每张图的等价物，不靠颜色传信息 ─────────── */
+  .table-view { margin-top: .6rem; }
+  .table-view summary {
+    font-size: 1rem; color: var(--ink-muted); cursor: pointer;
+    list-style: none; display: block;
+    /* 触摸目标：手指按不准 15px 的一行字 */
+    min-height: 3rem; line-height: 3rem;
+  }
+  .table-view summary::-webkit-details-marker { display: none; }
+  .table-view summary::before { content: "\25B8\00A0"; }
+  .table-view[open] summary::before { content: "\25BE\00A0"; }
+  .scroller { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; margin-top: .5rem; font-size: 1rem; }
+  th, td {
+    padding: .45em .9em .45em 0;
+    text-align: right;
+    font-variant-numeric: tabular-nums;   /* 成列的数字必须对齐 */
+    font-feature-settings: "tnum" 1;
+    border-bottom: 1px solid var(--hairline);
+    white-space: nowrap;
+  }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--ink-muted); font-weight: 500; }
+
+  .ft { margin-top: .9rem; font-size: .95rem; color: var(--ink-muted); display: flex; flex-wrap: wrap; }
+  .ft span, .ft a { margin-right: 1.5em; }
+
+  /* 页面里唯一的链接（去 /setup 配账号）。
+     不用蓝色 —— 这套配色里蓝是序列色、红黄绿是状态色，都有各自的含义，
+     借过来当链接色会让「蓝＝数据线」这条规则出现例外。改用下划线 + 提亮一档 */
+  a { color: var(--ink-2); text-decoration: underline; text-underline-offset: .25em; }
+  a:active { color: var(--ink); }
+  /* 不知道服务器在哪时链接会被摘掉 href —— 那就别再画得像能点 */
+  a:not([href]) { text-decoration: none; }
+  /* 提示条自带背景色，链接在上面跟着正文走就行，再变色只会更难认 */
+  .banner a { color: inherit; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="board" id="board">
+
+  <div class="hd">
+    <h1>质量趋势</h1>
+    <span class="range" id="range">—</span>
+    <span class="clock" id="clock">--:--:--</span>
+  </div>
+
+  <div class="banner err"  id="bannerErr"></div>
+  <div class="banner warn" id="bannerWarn"></div>
+  <div class="banner warn" id="bannerClock"></div>
+
+  <div class="top">
+    <div class="kpis">
+      <div class="card">
+        <div class="label" id="rateLabel">最新一日良品率</div>
+        <div class="figure"><span id="figRate">--</span><span class="unit">%</span></div>
+        <div class="status" id="figStatus"></div>
+        <div class="delta" id="figDelta"></div>
+      </div>
+      <div class="card">
+        <div class="label">当日不良品</div>
+        <div class="stat-value"><span id="figDefect">--</span> 件</div>
+        <div class="delta" id="figDefectDelta"></div>
+      </div>
+    </div>
+
+    <div class="panels">
+      <div class="card">
+        <h2 class="panel-title">良品率趋势<span class="sub" id="trendSub">按日</span></h2>
+        <div class="plot"><svg id="trend" role="img" aria-label="良品率按日趋势折线图"></svg></div>
+      </div>
+      <div class="card">
+        <h2 class="panel-title">不良品数<span class="sub">件 / 日 · 纵轴自 0 起</span></h2>
+        <div class="plot"><svg id="defects" role="img" aria-label="每日不良品数柱状图"></svg></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card groups">
+    <h2 class="panel-title">各产品良品率<span class="sub" id="groupSub">按检验量取前几位 · 共用同一纵轴，形状可直接互比</span></h2>
+    <div class="sparks" id="sparks"></div>
+    <details class="table-view">
+      <summary>表格视图（全部数值）</summary>
+      <div class="scroller" id="tableView"></div>
+    </details>
+  </div>
+
+  <div class="ft">
+    <span>数据每 60 秒自动刷新</span>
+    <span id="source">—</span>
+    <span id="lastUpdate">尚未获取数据</span>
+    <span id="serverTag"></span>
+    <!-- 通过 http://<服务器内网IP>:3200/board 打开时走相对路径 —— 页面从哪台机器
+         取来就向哪台机器要数，在大屏和任何人的电脑上都对。绝不能写死 localhost：
+         那在大屏上指的是平板自己。只有 file:// 直接打开时才由 JS 换成显式地址 -->
+    <a href="/setup" data-setup>配置 OA 账号</a>
+  </div>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// 数据源
+//
+// 正常走后端 /api/quality。直接双击打开本文件（没有后端）时，
+// 自动退回内置示例数据，方便离线看版面。
+//
+// 后端口径（由需求方指定）：
+//   分子 ← 接口4 检验异常录入列表 ProductionInspectionList 的不良数
+//   分母 ← 接口5 检验日报列表   InspectionDailyReportList  的检验数量
+// ═══════════════════════════════════════════════════════════════
+var DEMO = {
+  updatedAt: new Date().toISOString(),
+  range: '示例数据（未连接 OA）',
+  target: 98.5,
+  minSample: 200,
+  summary: {
+    rate: 97.9, defect: 86, output: 4185, periodRate: 98.2,
+    rateDelta: -0.5, defectDelta: 12, deltaBase: '前一有数据日', latestDate: '2026-07-29'
+  },
+  series: [
+    { t: '07-16', date: '2026-07-16', output: 3980, defect:  52, rate: 98.7 },
+    { t: '07-17', date: '2026-07-17', output: 4120, defect:  49, rate: 98.8 },
+    { t: '07-18', date: '2026-07-18', output: 4010, defect:  56, rate: 98.6 },
+    { t: '07-19', date: '2026-07-19', output:    0, defect:   0, rate: null },  // 周末无检验
+    { t: '07-20', date: '2026-07-20', output: 3890, defect:  78, rate: 98.0 },
+    { t: '07-21', date: '2026-07-21', output: 4230, defect:  62, rate: 98.5 },
+    { t: '07-22', date: '2026-07-22', output:  150, defect:   5, rate: 96.7 },  // 样本不足
+    { t: '07-23', date: '2026-07-23', output: 4050, defect:  71, rate: 98.2 },
+    { t: '07-24', date: '2026-07-24', output: 3960, defect:  95, rate: 97.6 },
+    { t: '07-25', date: '2026-07-25', output: 4180, defect: 118, rate: 97.2 },
+    { t: '07-26', date: '2026-07-26', output:    0, defect:   0, rate: null },
+    { t: '07-27', date: '2026-07-27', output: 4090, defect: 133, rate: 96.7 },  // 低谷
+    { t: '07-28', date: '2026-07-28', output: 4150, defect: 104, rate: 97.5 },
+    { t: '07-29', date: '2026-07-29', output: 4185, defect:  86, rate: 97.9 }
+  ],
+  groups: [
+    { name: 'A-1024 · 主控板',   spark: [99.2,99.0,98.8,null,98.9,99.1,98.7,99.1,99.0,98.9,null,98.8,99.0,99.1] },
+    { name: 'A-2087 · 驱动模块', spark: [98.9,98.6,98.7,null,98.4,98.6,98.5,98.6,98.5,98.4,null,98.3,98.5,98.6] },
+    { name: 'B-3310 · 外壳组件', spark: [98.7,98.8,98.5,null,97.9,97.6,96.8,96.9,96.5,96.2,null,95.8,96.1,96.4] },
+    { name: 'B-4152 · 传感器',   spark: [99.0,98.8,98.9,null,98.6,98.5,98.4,98.6,98.5,98.6,null,98.4,98.5,98.6] },
+    { name: 'C-5006 · 线束',     spark: [99.4,99.3,99.5,null,99.2,99.4,99.3,99.4,99.3,99.4,null,99.2,99.3,99.4] },
+    { name: 'C-6721 · 装配件',   spark: [98.2,98.1,97.9,null,97.6,97.4,97.2,97.1,97.0,97.0,null,96.9,97.0,97.0] }
+  ],
+  crossCheck: null,
+  counts: null
+};
+
+// ═══════════════════════════════════════════════════════════════
+// 服务器地址
+//
+// 正常情况下这里留空，全部走相对路径 —— 页面从哪台机器取来就向哪台机器
+// 要数，在大屏、班组长的电脑、主任的手机上一样对。所以推荐的打开方式是
+//     http://<服务器内网IP>:3200/board
+// 千万别写死 localhost：那在大屏上指的是平板自己，上面根本没有服务。
+//
+// 只有把本文件拷出去直接双击（file://）时才需要显式指定服务器。三个办法，
+// 优先级从高到低：
+//   1. 网址后面加 ?server=http://192.168.30.153:3200
+//      —— 会记在这台设备上，以后直接双击就行，不用再加
+//   2. 改下面的 DEFAULT_SERVER，改完这份文件拷到哪台机器都能用
+//   3. 都没有 → 显示示例数据，并在屏上写清楚该怎么配
+//
+// 跨机器取数是可行的：server.js 已经给 /api/quality 带了
+// Access-Control-Allow-Origin: *
+// ═══════════════════════════════════════════════════════════════
+var DEFAULT_SERVER = 'http://192.168.30.153:3200';   // 本机 WLAN 地址，换网络/换机器要跟着改
+
+function resolveServer() {
+  var m = /[?&]server=([^&]*)/.exec(location.search);
+  if (m) {
+    var v = decodeURIComponent(m[1]).replace(/\/+$/, '');
+    try { localStorage.setItem('qtc.server', v); } catch (e) {}
+    return v;
+  }
+  // 通过 http 打开时一律用相对路径，别被上次存的地址带跑偏 ——
+  // 换了台服务器却还在向旧的那台要数，是最难查的一类问题
+  if (location.protocol !== 'file:') return '';
+  try {
+    var saved = localStorage.getItem('qtc.server');
+    if (saved) return saved.replace(/\/+$/, '');
+  } catch (e) {}
+  return DEFAULT_SERVER.replace(/\/+$/, '');
+}
+
+var SERVER = resolveServer();
+function api(p) { return SERVER + p; }
+
+function loadQuality() {
+  return fetch(api('/api/quality'), { cache: 'no-store' }).then(function (res) {
+    if (res.ok) return res.json();
+    return res.json().catch(function () { return {}; }).then(function (body) {
+      var err = new Error(body.error || ('HTTP ' + res.status));
+      err.needSetup = Boolean(body.needSetup);   // 「没配账号」和「连不上」是两回事
+      throw err;
+    });
+  });
+}
+
+// 浅拷贝换掉 range，用于示例数据的两种场景。
+// 不用对象展开语法：那是 Chromium 60，Android 8 的内核正好卡在 58
+function withRange(obj, range) {
+  var out = {}, k;
+  for (k in obj) if (obj.hasOwnProperty(k)) out[k] = obj[k];
+  out.range = range;
+  return out;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 良品率状态判定
+// 三档，每档配「不同形状」的图标 + 文字 —— 红绿色盲看不出红绿差别，
+// 形状和文字才是可靠通道，颜色只是辅助
+// ═══════════════════════════════════════════════════════════════
+var GRADE = {
+  good:     { icon: '●', text: '达标', color: 'var(--good)'     },
+  warning:  { icon: '◆', text: '预警', color: 'var(--warning)'  },
+  critical: { icon: '■', text: '超标', color: 'var(--critical)' }
+};
+function gradeOf(rate, target) {
+  return rate >= target ? 'good' : rate >= target - 1.5 ? 'warning' : 'critical';
+}
+
+// 纵轴范围：良品率挤在 96–99 之间，从 0 起画会是一条直线。
+// 折线图允许截断纵轴（柱状图不允许 —— 柱长就是数值）
+function rateScale(values, target) {
+  var nums = [], i;
+  for (i = 0; i < values.length; i++) if (typeof values[i] === 'number') nums.push(values[i]);
+  if (!nums.length) nums.push(target);
+  nums.push(target);
+  return { lo: Math.floor(Math.min.apply(null, nums) - 0.5), hi: 100 };
+}
+
+// 时间和千分位一律手写。toLocaleTimeString('zh-CN') 依赖设备 ICU，
+// 同样的代码在不同 MAXHUB 上可能给 14:23:07，也可能给 下午2:23:07
+function p2(n) { return (n < 10 ? '0' : '') + n; }
+function hms(d) { return p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds()); }
+function group(n) {
+  var s = String(n), out = '', c = 0, i;
+  for (i = s.length - 1; i >= 0; i--) {
+    out = s.charAt(i) + out;
+    if (++c % 3 === 0 && i > 0) out = ',' + out;
+  }
+  return out;
+}
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+var SVGNS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, text) {
+  var n = document.createElementNS(SVGNS, tag), k;
+  for (k in attrs) if (attrs.hasOwnProperty(k)) n.setAttribute(k, attrs[k]);
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+// 老 WebView 上 svg{height:auto} 会算出 0 或 150px。
+// 量出父容器宽度，把 width/height 显式写死，任何内核都不会猜错
+function sizeSvg(svg, vbW, vbH) {
+  var w = svg.parentNode.clientWidth || 1;
+  svg.setAttribute('viewBox', '0 0 ' + vbW + ' ' + vbH);
+  svg.setAttribute('width', w);
+  svg.setAttribute('height', Math.round(w * vbH / vbW));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 主图：良品率按日折线
+// ═══════════════════════════════════════════════════════════════
+function renderTrend(data) {
+  var svg = document.getElementById('trend');
+  svg.textContent = '';
+
+  var W = 1200, H = 250, padL = 78, padR = 104, padT = 28, padB = 44;
+  sizeSvg(svg, W, H);
+
+  var plotW = W - padL - padR, plotH = H - padT - padB;
+  var pts = data.series, i;
+  if (!pts.length) return;
+
+  var rates = [];
+  for (i = 0; i < pts.length; i++) rates.push(pts[i].rate);
+  var sc = rateScale(rates, data.target), lo = sc.lo, hi = sc.hi;
+
+  var x = function (i) { return padL + (pts.length === 1 ? plotW / 2 : i * plotW / (pts.length - 1)); };
+  var y = function (v) { return padT + plotH - (v - lo) / (hi - lo) * plotH; };
+  var hasVal = function (i) { return typeof pts[i].rate === 'number'; };
+  var weakAt = function (i) { return pts[i].output > 0 && pts[i].output < data.minSample; };
+
+  // 网格：发丝实线，比数据弱一档（虚线会被读成「阈值」）
+  var gridStep = (hi - lo) > 8 ? 2 : 1;
+  for (var v = lo; v <= hi; v += gridStep) {
+    svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: y(v), y2: y(v),
+      stroke: 'var(--grid)', 'stroke-width': 1 }));
+    svg.appendChild(el('text', { x: padL - 14, y: y(v) + 7, 'text-anchor': 'end',
+      fill: 'var(--ink-muted)', 'font-size': 20 }, v + '%'));
+  }
+
+  // 目标线：这是真正的阈值，虚线在这里是正当用法。
+  // 标签放左端线上方 —— 右侧留给末点数值，挤一起会叠字
+  svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: y(data.target), y2: y(data.target),
+    stroke: 'var(--warning)', 'stroke-width': 2, 'stroke-dasharray': '8 6', 'stroke-linecap': 'round' }));
+  svg.appendChild(el('text', { x: padL + 6, y: y(data.target) - 11,
+    fill: 'var(--ink-2)', 'font-size': 19 }, '目标 ' + data.target + '%'));
+
+  // 不画面积填充：纵轴是截断的，面积会把「离基线多远」说成「有多少」
+
+  // 没有检验记录的日子（周末、停产）直接断开 —— 补 0 会画出一条
+  // 冲到底的假曲线，那是数据里没有的事
+  for (i = 1; i < pts.length; i++) {
+    if (!hasVal(i) || !hasVal(i - 1)) continue;
+    var weak = weakAt(i) || weakAt(i - 1);
+    svg.appendChild(el('path', {
+      d: 'M' + x(i - 1) + ',' + y(pts[i - 1].rate) + ' L' + x(i) + ',' + y(pts[i].rate),
+      fill: 'none', stroke: 'var(--series-1)', 'stroke-width': 2.5,
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: weak ? 0.35 : 1
+    }));
+  }
+
+  // 数据点带 2px 表面色环，压线时也看得清
+  for (i = 0; i < pts.length; i++) {
+    if (!hasVal(i)) continue;
+    var wk = weakAt(i);
+    svg.appendChild(el('circle', { cx: x(i), cy: y(pts[i].rate), r: 5,
+      fill: wk ? 'var(--surface)' : 'var(--series-1)',
+      stroke: wk ? 'var(--series-1)' : 'var(--surface)',
+      'stroke-width': 2, opacity: wk ? 0.6 : 1 }));
+  }
+
+  // 直接标注只标两个：末点和最低点。每点都标等于没标
+  var idx = [];
+  for (i = 0; i < pts.length; i++) if (hasVal(i)) idx.push(i);
+  if (idx.length) {
+    var last = idx[idx.length - 1], low = idx[0];
+    for (i = 0; i < idx.length; i++) if (pts[idx[i]].rate < pts[low].rate) low = idx[i];
+    var tag = function (i, anchor, dy) {
+      svg.appendChild(el('text', {
+        x: x(i) + (anchor === 'start' ? 12 : 0), y: y(pts[i].rate) + dy,
+        'text-anchor': anchor, fill: 'var(--ink)', 'font-size': 26, 'font-weight': 600
+      }, pts[i].rate.toFixed(1) + '%'));
+    };
+    if (low !== last) tag(low, 'middle', 34);
+    tag(last, 'start', 8);
+  }
+
+  svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: padT + plotH, y2: padT + plotH,
+    stroke: 'var(--axis)', 'stroke-width': 1 }));
+
+  // 日期多的时候隔一个标一个，免得挤成一坨
+  var every = pts.length > 16 ? 2 : 1;
+  for (i = 0; i < pts.length; i++) {
+    if (i % every !== 0 && i !== pts.length - 1) continue;
+    svg.appendChild(el('text', { x: x(i), y: padT + plotH + 31, 'text-anchor': 'middle',
+      fill: 'var(--ink-muted)', 'font-size': 20,
+      opacity: hasVal(i) ? (weakAt(i) ? 0.55 : 1) : 0.4 }, pts[i].t));
+  }
+
+  // 纵轴不从 0 起必须说明，否则会被读成「良品率快掉到底了」
+  svg.appendChild(el('text', { x: padL, y: 17, fill: 'var(--ink-muted)', 'font-size': 17 },
+    '纵轴 ' + lo + '–' + hi + '%（非零起点）· 空心点＝当日检验数不足 ' +
+    data.minSample + ' 件，比率仅供参考 · 断开＝当日无检验记录'));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 副图：每日不良品数
+//
+// 不和良品率画在一张图上（双纵轴）：两轴怎么对齐全凭主观，
+// 图会「造」出数据里根本没有的相关性。拆成上下两张，共用时间轴
+// ═══════════════════════════════════════════════════════════════
+function renderDefects(data) {
+  var svg = document.getElementById('defects');
+  svg.textContent = '';
+
+  // 左右内边距与主图完全一致，两张图的时间轴天然对齐
+  var W = 1200, H = 170, padL = 78, padR = 104, padT = 16, padB = 44;
+  sizeSvg(svg, W, H);
+
+  var plotW = W - padL - padR, plotH = H - padT - padB;
+  var pts = data.series, i;
+  if (!pts.length) return;
+
+  var raw = 1;
+  for (i = 0; i < pts.length; i++) if (pts[i].defect > raw) raw = pts[i].defect;
+  var step = raw <= 10 ? 2 : raw <= 30 ? 10 : raw <= 100 ? 25 : 50;
+  var hi = Math.ceil(raw / step) * step;             // 柱状图纵轴必须从 0 起
+  var slot = plotW / pts.length;
+  var bw = Math.max(4, Math.min(26, slot - 12));     // 柱不占满槽位，留空气
+  var x = function (i) { return padL + slot * (i + 0.5); };
+  var y = function (v) { return padT + plotH - v / hi * plotH; };
+
+  for (var v = 0; v <= hi; v += step) {
+    svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: y(v), y2: y(v),
+      stroke: v === 0 ? 'var(--axis)' : 'var(--grid)', 'stroke-width': 1 }));
+    svg.appendChild(el('text', { x: padL - 14, y: y(v) + 7, 'text-anchor': 'end',
+      fill: 'var(--ink-muted)', 'font-size': 20 }, v));
+  }
+
+  var every = pts.length > 16 ? 2 : 1;
+  for (i = 0; i < pts.length; i++) {
+    var p = pts[i];
+    if (p.output > 0 && p.defect > 0) {
+      var r = Math.min(4, bw / 2);
+      var l = x(i) - bw / 2, rr = x(i) + bw / 2, t = y(p.defect), b = padT + plotH;
+      // 数据端 4px 圆角、基线端方角，从同一条基线长出来
+      svg.appendChild(el('path', {
+        d: 'M' + l + ',' + b + ' L' + l + ',' + (t + r) +
+           ' Q' + l + ',' + t + ' ' + (l + r) + ',' + t +
+           ' L' + (rr - r) + ',' + t +
+           ' Q' + rr + ',' + t + ' ' + rr + ',' + (t + r) +
+           ' L' + rr + ',' + b + ' Z',
+        fill: 'var(--series-1)',
+        opacity: p.output < data.minSample ? 0.45 : 1
+      }));
+    }
+    if (i % every !== 0 && i !== pts.length - 1) continue;
+    svg.appendChild(el('text', { x: x(i), y: padT + plotH + 31, 'text-anchor': 'middle',
+      fill: 'var(--ink-muted)', 'font-size': 20,
+      opacity: p.output > 0 ? (p.output < data.minSample ? 0.55 : 1) : 0.4 }, p.t));
+  }
+
+  var peak = 0;
+  for (i = 0; i < pts.length; i++) if (pts[i].defect > pts[peak].defect) peak = i;
+  if (pts[peak].defect > 0) {
+    svg.appendChild(el('text', { x: x(peak), y: y(pts[peak].defect) - 13, 'text-anchor': 'middle',
+      fill: 'var(--ink)', 'font-size': 26, 'font-weight': 600 }, pts[peak].defect));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 小倍数：每个产品一张迷你折线
+//
+// 所有小图共用同一个纵轴范围。各画各的范围会让所有线看起来一样陡，
+// 那是在骗人
+// ═══════════════════════════════════════════════════════════════
+var SPARK_SLOTS = [];
+
+function buildSparks(data) {
+  var box = document.getElementById('sparks');
+  box.textContent = '';
+  SPARK_SLOTS = [];
+
+  var groups = data.groups || [], i;
+  if (!groups.length) {
+    box.innerHTML = '<div class="spark-status">区间内没有可分组的检验数据</div>';
+    return;
+  }
+
+  // 列数取组数（后端默认 6）。一行放不下就换行，靠 calc 分宽度 ——
+  // 不能用 flex gap，那是 Chromium 84
+  var perRow = Math.min(groups.length, 6);
+  var wCalc = 'calc((100% - ' + (perRow - 1) * 0.9 + 'rem) / ' + perRow + ')';
+
+  for (i = 0; i < groups.length; i++) {
+    var g = groups[i];
+    var vals = [], j;
+    for (j = 0; j < g.spark.length; j++) if (typeof g.spark[j] === 'number') vals.push(g.spark[j]);
+
+    // 大数字用整个区间的良品率（后端给的 g.rate）—— 面板标题写的是多少天，
+    // 数字就得是多少天的。取最后一天会被小样本带偏
+    var cur = typeof g.rate === 'number' ? g.rate : (vals.length ? vals[vals.length - 1] : null);
+    var grade = cur === null ? null : GRADE[gradeOf(cur, data.target)];
+
+    var card = document.createElement('div');
+    card.className = 'spark-card';
+    card.style.width = wCalc;
+    if ((i + 1) % perRow === 0) card.style.marginRight = '0';
+
+    var head = document.createElement('div');
+    head.className = 'spark-head';
+    var nm = document.createElement('span');
+    nm.className = 'spark-name';
+    nm.textContent = g.name;
+    var rt = document.createElement('span');
+    rt.className = 'spark-rate';
+    rt.textContent = cur === null ? '—' : cur.toFixed(1) + '%';
+    head.appendChild(nm); head.appendChild(rt);
+    card.appendChild(head);
+
+    var plot = document.createElement('div');
+    plot.className = 'plot';
+    card.appendChild(plot);
+
+    var st = document.createElement('div');
+    st.className = 'spark-status';
+    if (grade) {
+      var dot = document.createElement('span');
+      dot.className = 'ic';
+      dot.style.color = grade.color;
+      dot.textContent = grade.icon;
+      var tx = document.createElement('span');
+      // 检验量也写出来：光看比率不知道它建立在多少件上
+      tx.textContent = g.lowSample
+        ? grade.text + '（仅 ' + g.qty + ' 件，样本不足）'
+        : grade.text + (typeof g.qty === 'number' ? ' · ' + group(g.qty) + ' 件' : '');
+      st.appendChild(dot); st.appendChild(tx);
+    } else {
+      st.textContent = '无数据';
+    }
+    card.appendChild(st);
+
+    box.appendChild(card);
+    SPARK_SLOTS.push({ plot: plot, g: g, cur: cur, grade: grade });
+  }
+}
+
+function drawSparks(data) {
+  if (!SPARK_SLOTS.length) return;
+  var all = [], i, j;
+  for (i = 0; i < data.groups.length; i++)
+    for (j = 0; j < data.groups[i].spark.length; j++) all.push(data.groups[i].spark[j]);
+  var sc = rateScale(all, data.target), lo = sc.lo, hi = sc.hi;
+
+  for (i = 0; i < SPARK_SLOTS.length; i++) {
+    var s = SPARK_SLOTS[i], g = s.g, sp = g.spark;
+    var W = 240, H = 56, padT = 6, padB = 6;
+
+    s.plot.textContent = '';
+    var svg = el('svg', { role: 'img', 'aria-label':
+      g.name + ' 良品率趋势，当前 ' + (s.cur === null ? '无数据' : s.cur.toFixed(1) + '%') +
+      (s.grade ? '，' + s.grade.text : '') });
+    s.plot.appendChild(svg);
+    sizeSvg(svg, W, H);
+
+    var x = function (i) { return sp.length === 1 ? W / 2 : i * W / (sp.length - 1); };
+    var y = function (v) { return padT + (H - padT - padB) - (v - lo) / (hi - lo) * (H - padT - padB); };
+
+    // 小图里也保留目标线，否则读者没有判断高低的锚点
+    svg.appendChild(el('line', { x1: 0, x2: W, y1: y(data.target), y2: y(data.target),
+      stroke: 'var(--warning)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4', opacity: 0.75 }));
+
+    for (j = 1; j < sp.length; j++) {
+      if (typeof sp[j] !== 'number' || typeof sp[j - 1] !== 'number') continue;
+      svg.appendChild(el('path', {
+        d: 'M' + x(j - 1) + ',' + y(sp[j - 1]) + ' L' + x(j) + ',' + y(sp[j]),
+        fill: 'none', stroke: 'var(--series-1)', 'stroke-width': 2.5,
+        'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+    }
+    if (s.cur !== null) {
+      var lastIdx = 0;
+      for (j = 0; j < sp.length; j++) if (typeof sp[j] === 'number') lastIdx = j;
+      svg.appendChild(el('circle', { cx: x(lastIdx), cy: y(s.cur), r: 4.5,
+        fill: 'var(--series-1)', stroke: 'var(--surface)', 'stroke-width': 2 }));
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 表格视图 —— 每张图的等价物。大屏上折叠着，但值永远拿得到，
+// 不会出现「只有把鼠标悬上去才能读到数」的情况（大屏根本没鼠标）
+// ═══════════════════════════════════════════════════════════════
+function renderTable(data) {
+  var fmt = function (v) { return typeof v === 'number' ? v.toFixed(1) : '—'; };
+  var dim = function (p) { return p.output > 0 && p.output < data.minSample ? ' style="color:var(--ink-muted)"' : ''; };
+
+  var days = '', rowQty = '', rowDef = '', rowRate = '', i, j;
+  for (i = 0; i < data.series.length; i++) {
+    var p = data.series[i];
+    days    += '<th>' + esc(p.t) + '</th>';
+    rowQty  += '<td>' + group(p.output) + '</td>';
+    rowDef  += '<td>' + group(p.defect) + '</td>';
+    rowRate += '<td' + dim(p) + '>' + fmt(p.rate) + '</td>';
+  }
+
+  var html =
+    '<table><thead><tr><th>日期</th>' + days + '</tr></thead><tbody>' +
+      '<tr><td>检验数（件）</td>' + rowQty + '</tr>' +
+      '<tr><td>不良数（件）</td>' + rowDef + '</tr>' +
+      '<tr><td>良品率（%）</td>' + rowRate + '</tr>' +
+    '</tbody></table>';
+
+  var groups = data.groups || [];
+  if (groups.length) {
+    html += '<table><thead><tr><th>产品</th>' + days + '<th>状态</th></tr></thead><tbody>';
+    for (i = 0; i < groups.length; i++) {
+      var g = groups[i], vals = [];
+      for (j = 0; j < g.spark.length; j++) if (typeof g.spark[j] === 'number') vals.push(g.spark[j]);
+      var cur = vals.length ? vals[vals.length - 1] : null;
+      var gr = cur === null ? null : GRADE[gradeOf(cur, data.target)];
+      html += '<tr><td>' + esc(g.name) + '</td>';
+      for (j = 0; j < g.spark.length; j++) html += '<td>' + fmt(g.spark[j]) + '</td>';
+      html += '<td>' + (gr ? gr.icon + ' ' + gr.text : '—') + '</td></tr>';
+    }
+    html += '</tbody></table>';
+  }
+  document.getElementById('tableView').innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 渲染入口
+// ═══════════════════════════════════════════════════════════════
+var CURRENT = null;
+
+function applyData(data) {
+  var s = data.summary;
+
+  document.getElementById('range').textContent = data.range || '';
+  document.getElementById('trendSub').textContent =
+    data.series.length + ' 天 · 按日（数据源只到天，没有更细的粒度）';
+  document.getElementById('groupSub').textContent =
+    '按检验量取前 ' + (data.groups || []).length + ' 位 · 共用同一纵轴，形状可直接互比';
+  document.getElementById('rateLabel').textContent =
+    s.latestDate ? s.latestDate + ' 良品率' : '最新一日良品率';
+
+  if (typeof s.rate === 'number') {
+    var g = GRADE[gradeOf(s.rate, data.target)];
+    document.getElementById('figRate').textContent = s.rate.toFixed(1);
+    document.getElementById('figStatus').innerHTML =
+      '<span class="ic" style="color:' + g.color + '">' + g.icon + '</span>' +
+      g.text + '（目标 ' + data.target + '%）';
+  } else {
+    document.getElementById('figRate').textContent = '--';
+    document.getElementById('figStatus').textContent = '当日无检验数据';
+  }
+
+  // 方向由箭头字符承担，颜色只是加强
+  var dl = document.getElementById('figDelta');
+  if (typeof s.rateDelta === 'number') {
+    var up = s.rateDelta >= 0;
+    dl.innerHTML = '<span class="ar" style="color:' + (up ? 'var(--good)' : 'var(--critical)') + '">' +
+      (up ? '↑' : '↓') + '</span>' +
+      Math.abs(s.rateDelta).toFixed(1) + ' 个百分点 · 较' + s.deltaBase +
+      (typeof s.periodRate === 'number' ? ' · 区间累计 ' + s.periodRate.toFixed(1) + '%' : '');
+  } else dl.textContent = '';
+
+  document.getElementById('figDefect').textContent = group(s.defect || 0);
+  var ddl = document.getElementById('figDefectDelta');
+  if (typeof s.defectDelta === 'number') {
+    var dUp = s.defectDelta >= 0;
+    ddl.innerHTML = '<span class="ar" style="color:' + (dUp ? 'var(--critical)' : 'var(--good)') + '">' +
+      (dUp ? '↑' : '↓') + '</span>' +
+      Math.abs(s.defectDelta) + ' 件 · 较' + s.deltaBase;
+  } else ddl.textContent = '';
+
+  buildSparks(data);
+  renderTable(data);
+
+  // 分子分母不同源的风险要显式暴露，不能静默地错
+  var warn = document.getElementById('bannerWarn');
+  if (data.crossCheck && !data.crossCheck.ok) {
+    warn.textContent = '◆ 口径提示：' + data.crossCheck.note;
+    warn.className = 'banner warn show';
+  } else warn.className = 'banner warn';
+
+  document.getElementById('source').textContent = data.counts
+    ? '日报 ' + data.counts['日报记录'] + ' 条 / 异常 ' + data.counts['异常记录'] + ' 条'
+    : '示例数据';
+  document.getElementById('lastUpdate').textContent = '最后更新 ' + hms(new Date(data.updatedAt));
+}
+
+function drawCharts() {
+  if (!CURRENT) return;
+  renderTrend(CURRENT);
+  renderDefects(CURRENT);
+  drawSparks(CURRENT);
+}
+
+function render(data) {
+  CURRENT = data;
+  applyData(data);
+  fit();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 自适配：根字号 = 视口 / 设计稿
+//
+// 原版用 clamp() + vw，在 MAXHUB 上有两个问题：clamp 是 Chromium 79，
+// 老内核直接整条声明作废；而且 clamp 有上限，4K 面板上字号封顶后
+// 相对屏幕就偏小了。改成整体按比例缩放，物理尺寸恒定。
+//
+// 画完再量一次真实高度，超出就回缩 —— 提示条弹出来时高度会变，
+// 靠这一步兜住，保证永远是一屏，不出现需要滑动才看得全的情况
+// ═══════════════════════════════════════════════════════════════
+var DESIGN_W = 1920, DESIGN_H = 1080, BASE = 16;
+
+function tableOpen() {
+  var d = document.querySelector('.table-view');
+  return !!(d && d.open);
+}
+
+function fit() {
+  var doc = document.documentElement;
+  var vw = doc.clientWidth, vh = doc.clientHeight;
+  var k = Math.min(vw / DESIGN_W, vh / DESIGN_H);
+  doc.style.fontSize = (BASE * k) + 'px';
+  drawCharts();
+
+  // 表格视图展开时不回缩。表格又宽又高（14 天 × 3 行，再加 6 个产品 × 14 列），
+  // 为了把它塞进一屏而把整块看板一起缩小，会让所有字都变小 —— 五米外就废了。
+  // 而展开是有人站到屏前主动点的，那时候滚动比缩放合理
+  if (tableOpen()) return;
+
+  var h = document.getElementById('board').offsetHeight;
+  if (h > vh) {
+    doc.style.fontSize = (BASE * k * (vh / h) * 0.995) + 'px';
+    drawCharts();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 和服务器对表
+//
+// 屏上的时钟和「最后更新」都是用平板自己的系统时间显示的。这台平板要是
+// 没配 NTP 或者时区设错了，两个时间会一起错，而且看起来完全正常 ——
+// 没有任何迹象能让人发现，这比停摆更隐蔽。
+//
+// 拿服务端的 updatedAt 对一次表：刚取数成功还差这么多，那就是钟的问题。
+// 服务端向 OA 取数有 5 分钟缓存，updatedAt 合理地会落后几分钟，所以
+// 「偏快」这侧留 15 分钟余量；「偏慢」正常不该出现，只留 2 分钟
+// ═══════════════════════════════════════════════════════════════
+var CLOCK_AHEAD_MS  = 15 * 60 * 1000;
+var CLOCK_BEHIND_MS =  2 * 60 * 1000;
+
+function checkClock(data) {
+  var bar = document.getElementById('bannerClock');
+  var t = data && data.updatedAt ? Date.parse(data.updatedAt) : NaN;
+  if (!t) { bar.className = 'banner warn'; return; }
+
+  var drift = Date.now() - t;
+  if (drift > CLOCK_AHEAD_MS || drift < -CLOCK_BEHIND_MS) {
+    // 措辞上不把责任一口咬死在平板上（服务器的钟也可能是错的），
+    // 但先查哪一头是明确的
+    bar.textContent = '◆ 时间异常：大屏与服务器的时钟相差约 ' +
+      Math.round(Math.abs(drift) / 60000) + ' 分钟（大屏偏' + (drift > 0 ? '快' : '慢') +
+      '）。屏上的时钟和「最后更新」都不可信，请先检查这台平板的日期、时间与时区设置。';
+    bar.className = 'banner warn show';
+  } else {
+    bar.className = 'banner warn';
+  }
+  fit();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 拉数据：连续失败才报警（一次网络抖动不弹提示，避免误报），
+// 并明确写出「当前显示的是多久以前的旧数据」——
+// 看板最危险的不是黑屏，是挂着两小时前的数字还没人发现
+// ═══════════════════════════════════════════════════════════════
+var failCount = 0, lastOkTime = null;
+
+function load() {
+  // 离线快照模式：数据已经烤进文件，压根不联网。
+  // export-snapshot.js 会在主 script 前面注入一个 var SNAPSHOT = {...}。
+  // 这条路径是为「大屏上没有浏览器、只能用系统自带 HTML 查看器」准备的 ——
+  // U 盘插上点开就是完整看板，不需要服务器、防火墙、Wi-Fi 里任何一样。
+  // 没注入时 SNAPSHOT 是 undefined，守卫不成立，联网模式一切照旧。
+  if (typeof SNAPSHOT !== 'undefined' && SNAPSHOT) {
+    render(SNAPSHOT);
+    var sb = document.getElementById('bannerErr');
+    // 必须写明「不会自动更新」：一屏静态数字看起来跟实时的一模一样，
+    // 这正是看板最危险的情形
+    sb.textContent = '◆ 离线快照，数据截止 ' + (SNAPSHOT.dataAt || SNAPSHOT.snapshotAt || '未知')
+      + '（导出于 ' + (SNAPSHOT.snapshotAt || '未知') + '），不会自动更新。'
+      + '需要最新数据请重新导出。';
+    sb.className = 'banner err show';
+    fit();
+    // 不调 checkClock：快照本来就是旧的，报「数据过时」是误报
+    return Promise.resolve();
+  }
+
+  return loadQuality().then(function (data) {
+    render(data);
+    failCount = 0;
+    lastOkTime = Date.now();
+    document.getElementById('bannerErr').className = 'banner err';
+    checkClock(data);
+  }, function (err) {
+    if (window.console) console.error('获取质量数据失败:', err);
+
+    // 还没配 OA 账号 —— 这不是故障，是没装完。说清楚该去哪，别报成连接异常
+    if (err && err.needSetup) {
+      failCount = 0;
+      render(withRange(DEMO, '示例数据（尚未配置 OA 账号）'));
+      var b = document.getElementById('bannerErr');
+      // 这里用 innerHTML 是因为要塞一个链接，且整段文案全是写死的常量，
+      // 没有任何来自接口或用户的内容。下面那条报错横幅带 err.message，
+      // 那个必须继续用 textContent
+      b.innerHTML = '◆ 还没配置 OA 账号，下面显示的是示例数据。'
+        + '请在电脑上打开 <a href="/setup" data-setup>账号配置页</a> 登录一次'
+        + '（只需一次，之后大屏一直用这个账号取数）。';
+      b.className = 'banner err show';
+      fixSetupLinks();
+      fit();
+      return;
+    }
+
+    failCount++;
+    if (lastOkTime === null && failCount === 1) {
+      // 没有后端（比如把文件拷出来直接双击）→ 用示例数据把版面显示出来
+      render(DEMO);
+      // 但要说清楚为什么没数据、以及怎么办 —— 否则一屏假数据看起来跟真的一样
+      if (location.protocol === 'file:' && !SERVER) {
+        var nb = document.getElementById('bannerErr');
+        nb.textContent = '◆ 这是直接打开的本地文件，还没指定服务器地址，下面是示例数据。'
+          + '推荐改用 http://<服务器内网IP>:3200/board 打开；'
+          + '一定要用本地文件的话，在网址后面加 ?server=http://<服务器内网IP>:3200 '
+          + '打开一次，这台设备就会记住。';
+        nb.className = 'banner err show';
+        fit();
+      }
+      return;
+    }
+    if (failCount >= 2) {
+      var stale = lastOkTime
+        ? '，页面显示的是 ' + Math.round((Date.now() - lastOkTime) / 1000) + ' 秒前的旧数据'
+        : '';
+      var eb = document.getElementById('bannerErr');
+      eb.textContent = '■ 数据连接异常（已连续失败 ' + failCount + ' 次：' +
+        (err && err.message ? err.message : '未知错误') + '）' +
+        (SERVER ? '，服务器 ' + SERVER : '') + stale;
+      eb.className = 'banner err show';
+      fit();
+    }
+  });
+}
+
+// 双击打开看板时地址栏是 file://，/setup 这个相对链接会指向 file:///setup —— 死链。
+// 通过 http 打开时不动它：那时相对路径本来就是对的，而且比写死地址更对 ——
+// 大屏走的是服务器内网 IP，写死会把人送到大屏自己那台机器上
+function fixSetupLinks() {
+  if (location.protocol !== 'file:') return;
+  var as = document.querySelectorAll('a[data-setup]'), i;
+  for (i = 0; i < as.length; i++) {
+    // 连服务器在哪都不知道的时候，宁可摘掉链接，也别留一个点了没反应的死链
+    if (SERVER) as[i].href = SERVER + '/setup';
+    else as[i].removeAttribute('href');
+  }
+}
+
+// 页脚标出这块屏到底在向谁要数 —— 只有 file:// 跨机器取数时才有歧义，
+// 通过 http 打开时地址栏已经写着了，不用重复
+function showServerTag() {
+  document.getElementById('serverTag').textContent = SERVER ? '数据源 ' + SERVER : '';
+}
+
+fixSetupLinks();
+showServerTag();
+
+function tickClock() {
+  document.getElementById('clock').textContent = hms(new Date());
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 安卓浏览器的三个坑
+// ═══════════════════════════════════════════════════════════════
+
+// (1) 切后台 / 息屏 / 切信号源之后，定时器会被节流甚至完全暂停，
+//     时钟停在旧时间且不会自纠，轮询也停了。回前台立刻补一次
+document.addEventListener('visibilitychange', function () {
+  if (!document.hidden) { tickClock(); load(); keepAwake(); fit(); }
+});
+
+// (2) 屏幕自己睡。wakeLock 要 Chromium 84+ 且 https，
+//     拿不到就退回到在 MAXHUB 系统设置里关休眠
+var wakeLock = null;
+function keepAwake() {
+  try {
+    if (navigator.wakeLock && navigator.wakeLock.request) {
+      navigator.wakeLock.request('screen').then(
+        function (s) { wakeLock = s; },
+        function () {}
+      );
+    }
+  } catch (e) {}
+}
+
+// (3) 地址栏在偷高度，而且滚动时高度还会变。MAXHUB 自带浏览器不一定有
+//     kiosk 模式，第一次触摸时进全屏是最省事的办法
+document.addEventListener('click', function once(ev) {
+  // 别抢链接和表格视图的点击
+  var t = ev.target;
+  while (t && t !== document.body) {
+    if (t.tagName === 'A' || t.tagName === 'SUMMARY') return;
+    t = t.parentNode;
+  }
+  var e = document.documentElement;
+  var fs = e.requestFullscreen || e.webkitRequestFullscreen || e.mozRequestFullScreen;
+  if (fs) { try { fs.call(e); } catch (err) {} }
+  document.removeEventListener('click', once);
+});
+
+window.addEventListener('resize', fit);
+window.addEventListener('orientationchange', function () { setTimeout(fit, 300); });
+document.addEventListener('fullscreenchange', function () { setTimeout(fit, 100); });
+document.addEventListener('webkitfullscreenchange', function () { setTimeout(fit, 100); });
+// 展开/收起表格视图会改变页面高度，重新算一次（展开时 fit 不再回缩，改成滚动）。
+// toggle 事件不冒泡，所以用捕获
+document.addEventListener('toggle', function (ev) {
+  fit();
+  // 表格在页面最底下，展开后不滚过去的话，点了像是没反应
+  if (ev.target && ev.target.open && ev.target.scrollIntoView) {
+    try { ev.target.scrollIntoView(); } catch (e) {}
+  }
+}, true);
+
+// ═══════════════════════════════════════════════════════════════
+// 启动
+// ═══════════════════════════════════════════════════════════════
+tickClock();
+setInterval(tickClock, 1000);
+keepAwake();
+load();
+setInterval(load, 60000);   // 数据源是按日的，没必要 3 秒一刷
+</script>
+</body>
+</html>
