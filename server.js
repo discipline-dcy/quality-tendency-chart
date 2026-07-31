@@ -29,7 +29,13 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const PORT = 3200;                      // 3000 生产看板 / 3100 周报 / 3200 质量趋势
+// 默认 3200（3000 生产看板 / 3100 周报 / 3200 质量趋势）。
+// 允许覆盖是因为交换机在 VLAN 之间可能只放行 80/443，车间大屏够不到高位端口：
+//   node server.js --port 80        或        set PORT=80 && node server.js
+const PORT = Number(
+  (process.argv[process.argv.indexOf('--port') + 1] || '').match(/^\d+$/)?.[0]
+  || process.env.PORT
+) || 3200;
 
 // 绑 0.0.0.0 而不是 127.0.0.1：车间大屏、班组长的电脑、主任的手机都在
 // 内网另一头，只绑本机回环的话除了服务器自己谁都打不开。
@@ -557,27 +563,49 @@ async function handleLogout(req, res) {
   sendJSON(res, 200, { ok: true });
 }
 
+// 虚拟网卡的名字关键字：代理软件的 TUN 网卡、虚拟机、WSL、Hyper-V 的
+// vEthernet、远程控制软件。这些网卡的 IP 只在本机这一头成立，车间大屏
+// 那边根本路由不过来
+const VIRTUAL_NIC = /mihomo|clash|v2ray|singbox|sing-box|tap|tun|vmware|virtualbox|vbox|vethernet|hyper-v|wsl|docker|zerotier|tailscale|radmin|npcap|loopback|虚拟/i;
+
+// 真·内网网段（RFC1918）。Mihomo 的 TUN 网卡用的 198.18.0.0/15 是
+// 基准测试保留段、不在这三段里，按网段筛就能连名字都不用认地滤掉
+function isPrivateV4(ip) {
+  const p = ip.split('.').map(Number);
+  if (p.length !== 4 || p.some(n => !Number.isInteger(n))) return false;
+  if (p[0] === 10) return true;
+  if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+  if (p[0] === 192 && p[1] === 168) return true;
+  return false;
+}
+
 /**
  * 列出这台机器的内网 IPv4，给启动日志用 —— 别人问「网址是多少」的时候
  * 不用再去翻 ipconfig。
  *
- * 滤掉两类地址：
+ * 滤掉四类地址：
  *   - internal（127.0.0.1）：只有本机能用，这里要的是给别人用的地址
  *   - 169.254.x.x：APIPA，DHCP 没拿到地址时系统自己编的，连不通。
  *     这台机器上光虚拟网卡就有好几个这种，不滤会淹掉真正能用的那个。
+ *   - 不在 RFC1918 网段里的：主要是代理软件 TUN 网卡的 198.18.x.x
+ *   - 网卡名一看就是虚拟的：VMware 之流会占用 192.168.x.x，网段筛不掉
+ *
+ * 后两条筛过头会把唯一能用的地址也筛没，所以留了兜底：真筛空了就退回
+ * 只做前两条的结果，宁可多打几行让人自己挑，也不能一行都不给
  */
 function lanAddresses() {
-  const out = [];
+  const all = [];
   for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
     for (const a of addrs || []) {
       // family 在 Node 18.0~18.3 那几个版本里是数字 4，之后又改回了字符串
       // 'IPv4'。服务器上的 Node 版本不归我们管，两种都认。
       if ((a.family !== 'IPv4' && a.family !== 4) || a.internal) continue;
       if (a.address.startsWith('169.254.')) continue;
-      out.push({ address: a.address, name });
+      all.push({ address: a.address, name });
     }
   }
-  return out;
+  const real = all.filter(x => isPrivateV4(x.address) && !VIRTUAL_NIC.test(x.name));
+  return real.length ? real : all;
 }
 
 function serve() {
@@ -657,7 +685,16 @@ function serve() {
     } else {
       console.log('  ⚠ 没找到内网 IP，这台机器可能没连网，其他电脑打不开。');
     }
-    console.log(`  车间大屏：在上面任一地址后加 /board（MAXHUB 安卓适配版）`);
+    // 大屏那头是拿遥控器点地址栏输网址的，让人自己拼「地址 + /board」
+    // 每次都要念一遍。这里直接把整条能敲的网址打全，照着抄就行
+    console.log('  车间大屏（MAXHUB 安卓适配版）：');
+    if (lan.length) {
+      for (const { address, name } of lan) {
+        console.log(`    http://${address}:${PORT}/quality-maxhub.html    ← ${name}`);
+      }
+    } else {
+      console.log(`    http://localhost:${PORT}/quality-maxhub.html    ← 仅本机`);
+    }
     console.log(`  数据接口：http://localhost:${PORT}/api/quality`);
     if (configured()) {
       console.log(`  OA 账号：${cfg.userCode}（已配置）`);

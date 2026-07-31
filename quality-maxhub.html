@@ -322,7 +322,7 @@ var DEMO = {
 //
 // 只有把本文件拷出去直接双击（file://）时才需要显式指定服务器。三个办法，
 // 优先级从高到低：
-//   1. 网址后面加 ?server=http://192.168.99.15:3200
+//   1. 网址后面加 ?server=http://192.168.30.153:3200
 //      —— 会记在这台设备上，以后直接双击就行，不用再加
 //   2. 改下面的 DEFAULT_SERVER，改完这份文件拷到哪台机器都能用
 //   3. 都没有 → 显示示例数据，并在屏上写清楚该怎么配
@@ -330,7 +330,7 @@ var DEMO = {
 // 跨机器取数是可行的：server.js 已经给 /api/quality 带了
 // Access-Control-Allow-Origin: *
 // ═══════════════════════════════════════════════════════════════
-var DEFAULT_SERVER = '';        // 例：'http://192.168.99.15:3200'
+var DEFAULT_SERVER = 'http://192.168.30.153:3200';   // 本机 WLAN 地址，换网络/换机器要跟着改
 
 function resolveServer() {
   var m = /[?&]server=([^&]*)/.exec(location.search);
@@ -902,6 +902,25 @@ function checkClock(data) {
 var failCount = 0, lastOkTime = null;
 
 function load() {
+  // 离线快照模式：数据已经烤进文件，压根不联网。
+  // export-snapshot.js 会在主 script 前面注入一个 var SNAPSHOT = {...}。
+  // 这条路径是为「大屏上没有浏览器、只能用系统自带 HTML 查看器」准备的 ——
+  // U 盘插上点开就是完整看板，不需要服务器、防火墙、Wi-Fi 里任何一样。
+  // 没注入时 SNAPSHOT 是 undefined，守卫不成立，联网模式一切照旧。
+  if (typeof SNAPSHOT !== 'undefined' && SNAPSHOT) {
+    render(SNAPSHOT);
+    var sb = document.getElementById('bannerErr');
+    // 必须写明「不会自动更新」：一屏静态数字看起来跟实时的一模一样，
+    // 这正是看板最危险的情形
+    sb.textContent = '◆ 离线快照，数据截止 ' + (SNAPSHOT.dataAt || SNAPSHOT.snapshotAt || '未知')
+      + '（导出于 ' + (SNAPSHOT.snapshotAt || '未知') + '），不会自动更新。'
+      + '需要最新数据请重新导出。';
+    sb.className = 'banner err show';
+    fit();
+    // 不调 checkClock：快照本来就是旧的，报「数据过时」是误报
+    return Promise.resolve();
+  }
+
   return loadQuality().then(function (data) {
     render(data);
     failCount = 0;
