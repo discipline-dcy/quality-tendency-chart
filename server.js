@@ -570,6 +570,11 @@ function aggregate(daily, abnormal, component, allDays) {
     `${pick(row, FIELDS.type) ?? '(空)'} / ${canonPosition(pick(row, FIELDS.position)) || '(空)'}`;
   const denomCombos = new Set();
   const orphan = new Map();          // 分母没覆盖的组合 → 分子在上面记了多少不良
+  // 同样的件数再按**检验类型**记一份。体检的容忍线要按类型各算各的：
+  // 拿全厂检验量当分母，小类型的问题会被淹掉 —— 清分机那 24 件对全厂
+  // （约 2 万件）只有 0.12%，对它自己（626 件）却是 3.8%。
+  // 只看全厂，等于给小批量的产线发了一张永久免检证。
+  const orphanByType = new Map();
 
   // 分母：接口 5 检验日报
   for (const row of daily) {
@@ -604,7 +609,11 @@ function aggregate(daily, abnormal, component, allDays) {
 
     // 这条不良所在的检验环节，分母那边根本没有对应记录 → 记下来
     const combo = comboOf(row);
-    if (def > 0 && !denomCombos.has(combo)) orphan.set(combo, (orphan.get(combo) || 0) + def);
+    if (def > 0 && !denomCombos.has(combo)) {
+      orphan.set(combo, (orphan.get(combo) || 0) + def);
+      const tk = typeOf(row);
+      orphanByType.set(tk, (orphanByType.get(tk) || 0) + def);
+    }
 
     const T = touchType(typeOf(row));
     T.defect += def;
@@ -733,6 +742,7 @@ function aggregate(daily, abnormal, component, allDays) {
   const flowFpy = fpyOf(flowSum);
 
   const types = [];
+  const perTypeAudit = [];   // 体检按类型算容忍线用：每个类型自己的分母和差异件数
   const typeOrphans = [];
   for (const T of byType.values()) {
     const active = allDays.filter(d => T.byDay.get(d).qty > 0);
@@ -787,6 +797,14 @@ function aggregate(daily, abnormal, component, allDays) {
         return s + (c.qty === 0 ? c.defect : 0);
       }, 0),
       lowSample: T.qty < cfg.minSample,
+    });
+    // 体检按类型算容忍线用的那一份。这里能拿到 T.key（原值）和 T.qty（该类型
+    // 自己的分母），出了这个循环就只剩显示名了
+    perTypeAudit.push({
+      name: labelOf(T.key),
+      qty: T.qty,
+      orphanDefect: orphanByType.get(T.key) || 0,
+      noDenomDefect: types[types.length - 1].noDenomDefect,
     });
   }
 
@@ -905,6 +923,8 @@ function aggregate(daily, abnormal, component, allDays) {
       noDenomDefect: types.reduce((s, t) => s + t.noDenomDefect, 0),
       // 流水三环节没凑齐的天数。这些天的直通率少乘一层，偏高
       flowPartialDays,
+      // 按类型分的差异，容忍线拿它逐个判 —— 只看全厂合计会漏掉小类型
+      perType: perTypeAudit,
     },
   };
 }
@@ -922,33 +942,59 @@ function aggregate(daily, abnormal, component, allDays) {
 // 这部分不良有分子没分母，会把良品率算低。这个量是可以精确算出来的，
 // 所以体检报这个数，不报那个虚的百分点差。
 // ═══════════════════════════════════════════════════════════════
-// 录入噪声的容忍线：占分母 0.5% 以内不点亮告警条。
+// 录入噪声的容忍线：差异占**该类型自己**分母的 0.5% 以内，不点亮告警条。
 //
-// 早先是零容忍 —— 只要有 1 件对不上就亮黄条。车间的录入不可能一件不差，
-// 结果是告警条**常年亮着**，然后就没人看它了。一个永远亮的灯等于没有灯。
-// 数字照常算、照常在表格里能查到，只是不再打断读者。
+// 两次教训叠出来的这条规则：
+//   ① 原先零容忍 —— 只要有 1 件对不上就亮黄条。车间的录入不可能一件不差，
+//      结果告警条常年亮着，然后就没人看它了。一个永远亮的灯等于没有灯。
+//   ② 于是加了容忍线，但分母用的是**全厂**检验量 —— 又走过了头：清分机那
+//      24 件对全厂（约 2 万件）只有 0.12%，对它自己（626 件）却是 3.8%。
+//      小批量的产线等于拿到一张永久免检证。
+// 所以按类型逐个判，取最严的那个。数字照常算、表格里照常查得到，
+// 只是不再无谓地打断读者。
 const AUDIT_TOLERANCE_PCT = 0.5;
 
 function auditRatio(audit, totalQty) {
   const { orphanDefect, orphanCombos, abnormalDefect, dailyOwnDefect,
-          orphanTypes, noDenomDefect, notCountedDefect, flowPartialDays } = audit;
+          orphanTypes, noDenomDefect, notCountedDefect, flowPartialDays,
+          perType } = audit;
   const pct = totalQty > 0 ? +(orphanDefect / totalQty * 100).toFixed(2) : 0;
   const noDenomPct = totalQty > 0 ? +(noDenomDefect / totalQty * 100).toFixed(2) : 0;
 
+  // 逐类型算「差异 ÷ 该类型自己的分母」，找出最严重的那个。
+  // 分母为 0 的类型跳过 —— 它属于 orphanTypes，那边从严处理。
+  const typeRates = (perType || [])
+    .filter(t => t.qty > 0)
+    .map(t => ({
+      name: t.name,
+      defect: t.orphanDefect + t.noDenomDefect,
+      pct: +((t.orphanDefect + t.noDenomDefect) / t.qty * 100).toFixed(2),
+    }))
+    .sort((a, b) => b.pct - a.pct);
+  const worst = typeRates[0] || null;
+
   // 整类没有分母仍然从严：那不是录入笔误，是一条线压根没做检验日报，
   // 它会让一整张卡片消失，必须有人知道。
-  // 前两类是录入精度问题，走容忍线。
-  const ok = pct <= AUDIT_TOLERANCE_PCT
-          && noDenomPct <= AUDIT_TOLERANCE_PCT
-          && !orphanTypes.length;
+  // 其余走按类型的容忍线。没有 perType（老调用方）时退回全厂口径。
+  const overLine = worst
+    ? worst.pct > AUDIT_TOLERANCE_PCT
+    : (pct > AUDIT_TOLERANCE_PCT || noDenomPct > AUDIT_TOLERANCE_PCT);
+  const ok = !overLine && !orphanTypes.length;
 
   // 三种「有分子没分母」分开说，因为该找的人不一样：
   //   环节对不上 → 检出位置的写法不统一，找录入规范
   //   整类无分母 → 这条线根本没做检验日报，找那条线的班组长
   //   当天无日报 → 日报漏填或补录延迟，找当天的检验员
   const parts = [];
+  // 超线的类型点名报出来。只给一个全厂百分比，读者不知道该去找哪条线 ——
+  // 而超线往往就是某一个类型的问题，摊到全厂会被稀释成一个没人当回事的小数
+  const over = typeRates.filter(t => t.pct > AUDIT_TOLERANCE_PCT);
+  if (over.length) {
+    parts.push('分子分母对不齐的类型：' +
+      over.map(t => `「${t.name}」${t.defect} 件，占它自己分母的 ${t.pct}%`).join('；'));
+  }
   if (orphanDefect > 0) {
-    parts.push(`分子里有 ${orphanDefect} 件不良（占分母 ${pct}%）来自分母未覆盖的检验环节：${orphanCombos.join('；')}`);
+    parts.push(`其中来自分母未覆盖的检验环节的有 ${orphanDefect} 件（占全厂分母 ${pct}%）：${orphanCombos.join('；')}`);
   }
   if (orphanTypes && orphanTypes.length) {
     parts.push(`${orphanTypes.map(t => `「${t.name}」${t.defect} 件`).join('、')}整个区间没有任何检验日报，` +
@@ -968,10 +1014,13 @@ function auditRatio(audit, totalQty) {
       ? `流水有 ${flowPartialDays} 天三个环节没凑齐（多半是电检日报没填），`
         + '这些天按已有环节相乘，直通率偏高，图上画成空心点。'
       : null,
+    // 最严重的那个类型也报出来（即使没超线）—— 容忍线不是"当它不存在"，
+    // 是"不打断读者"。数字仍然要能查到
+    worstType: worst,
     note: ok
-      ? (pct > 0 || noDenomDefect > 0
-          ? `分子分母基本对得齐（${orphanDefect + noDenomDefect} 件差异，占分母 `
-            + `${(pct + noDenomPct).toFixed(2)}%，在 ${AUDIT_TOLERANCE_PCT}% 的录入噪声容忍线内）`
+      ? (worst && worst.defect > 0
+          ? `分子分母基本对得齐（差异最大的是「${worst.name}」${worst.defect} 件，`
+            + `占它自己分母的 ${worst.pct}%，在 ${AUDIT_TOLERANCE_PCT}% 的录入噪声容忍线内）`
           : '分子的检验环节都能在分母里找到对应记录')
       : parts.join('。') + '。以上都会把良品率算低。',
     hint: dailyOwnDefect < abnormalDefect * 0.6
@@ -982,7 +1031,7 @@ function auditRatio(audit, totalQty) {
     // 排除动作本身不该是隐形的，否则看板上的数跟 OA 里的原始不良数对不上，
     // 而没人知道差在哪
     notCountedNote: notCountedDefect > 0
-      ? `已按「不计为不良数」字段扣除 ${notCountedDefect} 件不良，未计入良品率。`
+      ? `已按「不计为不良数」字段扣除 ${notCountedDefect} 件不良，未计入合格率（OA 原始不良数比屏上大 ${notCountedDefect} 件）。`
       : null,
   };
 }
