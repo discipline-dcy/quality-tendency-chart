@@ -1282,7 +1282,9 @@ function renderTable(data) {
             '<td><strong>' + fmt(data.flowFpy) + '</strong></td></tr>';
     html += '</tbody></table>';
     html += '<div class="spark-target">直通率 ＝ 电检合格率 × 装配检合格率 × 流水检合格率；' +
-            '互检无分母，不参与计算</div>';
+            '互检无分母，不参与计算' +
+            (data.crossCheck && data.crossCheck.partialNote
+              ? '<br>' + esc(data.crossCheck.partialNote) : '') + '</div>';
   }
 
   var groups = data.groups || [];

@@ -313,6 +313,27 @@ const FLOW_STAGES = [
 ];
 const stageKey = row => `${pick(row, FIELDS.type) ?? ''} ${pick(row, FIELDS.position) ?? ''}`;
 
+// ── 录入写法归一 ─────────────────────────────────────────────
+// 同一个检验环节在 OA 里有好几种写法。人一眼看出是一回事，程序看不出来 ——
+// 不归一的话分子分母就对不上，那些不良会被体检报成「有分子没分母」，
+// 而它们其实有分母，只是两边名字没写成一样。
+//
+// 「点币」「点币检」「清分机点币」是同一个环节（2026-08-08 需求方确认）。
+// 录入规范短期内统一不了，报表这边先自己吃掉这个差异 —— 让看板去等一个
+// 永远不会来的「大家都改成一种写法」，不如现在就把数出对。
+//
+// 只作用于**检出位置**，不碰检验类型：类型是目标线和卡片分组的查表键，
+// 归一它会让「清分机」查不到 KPI。
+const POSITION_ALIASES = [
+  { canon: '点币', test: s => s.includes('点币') },
+];
+function canonPosition(v) {
+  const s = String(v ?? '').replace(/\s+/g, '');
+  if (!s) return '';
+  const hit = POSITION_ALIASES.find(a => a.test(s));
+  return hit ? hit.canon : s;
+}
+
 // 互检没有分母，不参与任何合格率（README 第 62 行），直通率同理
 const isMutual = row => {
   const t = String(pick(row, FIELDS.type) ?? '');
@@ -532,8 +553,11 @@ function aggregate(daily, abnormal, component, allDays) {
     return p;
   };
 
-  // 分子分母的记录集合对不对得齐，看「检验类型 + 检出位置」这个组合
-  const comboOf = row => `${pick(row, FIELDS.type) ?? '(空)'} / ${pick(row, FIELDS.position) ?? '(空)'}`;
+  // 分子分母的记录集合对不对得齐，看「检验类型 + 检出位置」这个组合。
+  // 检出位置走归一（点币 / 点币检 / 清分机点币 算同一个），否则光是写法不同
+  // 就会让 22 件本来对得上的不良被报成「分母未覆盖」
+  const comboOf = row =>
+    `${pick(row, FIELDS.type) ?? '(空)'} / ${canonPosition(pick(row, FIELDS.position)) || '(空)'}`;
   const denomCombos = new Set();
   const orphan = new Map();          // 分母没覆盖的组合 → 分子在上面记了多少不良
 
@@ -654,19 +678,43 @@ function aggregate(daily, abnormal, component, allDays) {
     for (const s of FLOW_STAGES) if (s.matches(k)) { flowDay.get(day)[s.id].defect += d; flowSum[s.id].defect += d; }
   }
 
-  // 三个环节的率相乘。任一环节无分母 → null（当天不画点）
+  // 三个环节的率相乘。
+  //
+  // 早先是「任一环节无分母 → 当天整个不算」，太死了：电检的检验量只有
+  // 4720，不到装配检（8669）和流水检（8721）的一半，很多天根本没有电检
+  // 日报 —— 那些天流水明明在生产、也记了不良，却因为缺一个环节被整天丢掉，
+  // 趋势线上一串断点。这是**日报录入**的问题，不该让报表跟着停摆。
+  //
+  // 改成：有数据的环节才相乘，一个环节都没有才返回 null。
+  // 代价是环节不全的那天分母少了一层，直通率会偏高 —— 所以这种天必须标出来
+  // （见下面的 flowThinDay），前端画成空心点，读者知道它和三环节齐全的
+  // 那些点不是一把尺子。
+  const fpyStagesOf = cell => FLOW_STAGES.filter(s => cell[s.id].qty > 0);
   const fpyOf = cell => {
-    const rates = FLOW_STAGES.map(s => cell[s.id].qty > 0 ? 1 - cell[s.id].defect / cell[s.id].qty : null);
-    if (rates.some(r => r === null)) return null;
-    return +(rates.reduce((a, b) => a * b, 1) * 100).toFixed(1);
+    const live = fpyStagesOf(cell);
+    if (!live.length) return null;
+    const r = live.reduce((a, s) => a * (1 - cell[s.id].defect / cell[s.id].qty), 1);
+    return +(r * 100).toFixed(1);
   };
-  // 小样本要按**环节**判，不能按当日总量判：实测有「当天流水共 186 件、
-  // 但电检只做了 15 件」的日子，直通率被拉到 43.78%。按总量判它是达标样本，
-  // 按环节判才看得出那个点不可信。近 90 天 24/62 天属于这种。
-  const flowThinDay = d => FLOW_STAGES.some(s => {
-    const c = flowDay.get(d)[s.id];
-    return c.qty > 0 && c.qty < cfg.minSample;
-  });
+  // 两种「这个点不可信」合并成一个标记，前端都画成空心：
+  //   ① 某个环节样本太小 —— 实测有「当天流水共 186 件、但电检只做了 15 件」
+  //      的日子，直通率被拉到 43.78%。按当日总量判它是达标样本，按环节判
+  //      才看得出不可信。近 90 天 24/62 天属于这种。
+  //   ② 环节不齐 —— 少乘一层，率天然偏高，不能和齐全的点直接比高低
+  const flowThinDay = d => {
+    const cell = flowDay.get(d);
+    if (fpyStagesOf(cell).length && fpyStagesOf(cell).length < FLOW_STAGES.length) return true;
+    return FLOW_STAGES.some(s => {
+      const c = cell[s.id];
+      return c.qty > 0 && c.qty < cfg.minSample;
+    });
+  };
+  // 环节不齐的天数，报出来 —— 口径宽了就必须说清楚宽在哪，
+  // 否则「流水的点变多了」会被当成产量变化
+  const flowPartialDays = allDays.filter(d => {
+    const n = fpyStagesOf(flowDay.get(d)).length;
+    return n > 0 && n < FLOW_STAGES.length;
+  }).length;
   const flowStages = FLOW_STAGES.map(s => ({
     id: s.id, label: s.label,
     qty: flowSum[s.id].qty, defect: flowSum[s.id].defect,
@@ -845,6 +893,8 @@ function aggregate(daily, abnormal, component, allDays) {
       orphanTypes: typeOrphans.sort((a, b) => b.defect - a.defect),
       // 有分母的类型里，落在「当天日报一条没有」的那些日子上的不良
       noDenomDefect: types.reduce((s, t) => s + t.noDenomDefect, 0),
+      // 流水三环节没凑齐的天数。这些天的直通率少乘一层，偏高
+      flowPartialDays,
     },
   };
 }
@@ -862,11 +912,25 @@ function aggregate(daily, abnormal, component, allDays) {
 // 这部分不良有分子没分母，会把良品率算低。这个量是可以精确算出来的，
 // 所以体检报这个数，不报那个虚的百分点差。
 // ═══════════════════════════════════════════════════════════════
+// 录入噪声的容忍线：占分母 0.5% 以内不点亮告警条。
+//
+// 早先是零容忍 —— 只要有 1 件对不上就亮黄条。车间的录入不可能一件不差，
+// 结果是告警条**常年亮着**，然后就没人看它了。一个永远亮的灯等于没有灯。
+// 数字照常算、照常在表格里能查到，只是不再打断读者。
+const AUDIT_TOLERANCE_PCT = 0.5;
+
 function auditRatio(audit, totalQty) {
   const { orphanDefect, orphanCombos, abnormalDefect, dailyOwnDefect,
-          orphanTypes, noDenomDefect, notCountedDefect } = audit;
+          orphanTypes, noDenomDefect, notCountedDefect, flowPartialDays } = audit;
   const pct = totalQty > 0 ? +(orphanDefect / totalQty * 100).toFixed(2) : 0;
-  const ok = orphanDefect === 0 && !orphanTypes.length && !noDenomDefect;
+  const noDenomPct = totalQty > 0 ? +(noDenomDefect / totalQty * 100).toFixed(2) : 0;
+
+  // 整类没有分母仍然从严：那不是录入笔误，是一条线压根没做检验日报，
+  // 它会让一整张卡片消失，必须有人知道。
+  // 前两类是录入精度问题，走容忍线。
+  const ok = pct <= AUDIT_TOLERANCE_PCT
+          && noDenomPct <= AUDIT_TOLERANCE_PCT
+          && !orphanTypes.length;
 
   // 三种「有分子没分母」分开说，因为该找的人不一样：
   //   环节对不上 → 检出位置的写法不统一，找录入规范
@@ -888,8 +952,17 @@ function auditRatio(audit, totalQty) {
     ...audit,
     orphanPct: pct,
     ok,
+    // 流水环节不齐的天数单独一条：它和上面几条方向相反 ——
+    // 那些天少乘一层，直通率偏**高**，不说清楚会被当成产线变好了
+    partialNote: flowPartialDays > 0
+      ? `流水有 ${flowPartialDays} 天三个环节没凑齐（多半是电检日报没填），`
+        + '这些天按已有环节相乘，直通率偏高，图上画成空心点。'
+      : null,
     note: ok
-      ? '分子的检验环节都能在分母里找到对应记录'
+      ? (pct > 0 || noDenomDefect > 0
+          ? `分子分母基本对得齐（${orphanDefect + noDenomDefect} 件差异，占分母 `
+            + `${(pct + noDenomPct).toFixed(2)}%，在 ${AUDIT_TOLERANCE_PCT}% 的录入噪声容忍线内）`
+          : '分子的检验环节都能在分母里找到对应记录')
       : parts.join('。') + '。以上都会把良品率算低。',
     hint: dailyOwnDefect < abnormalDefect * 0.6
       ? `另注：日报自带的「不良数量」只有 ${dailyOwnDefect} 件，远少于异常录入的 ${abnormalDefect} 件，` +

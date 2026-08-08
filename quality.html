@@ -818,7 +818,8 @@ function renderTable(data) {
       </tbody>
     </table>
     <div class="spark-target" style="margin-top:.6em">
-      直通率 ＝ 电检合格率 × 装配检合格率 × 流水检合格率；互检无分母，不参与计算
+      直通率 ＝ 电检合格率 × 装配检合格率 × 流水检合格率；互检无分母，不参与计算${
+        data.crossCheck && data.crossCheck.partialNote ? '<br>' + data.crossCheck.partialNote : ''}
     </div>` : ''}
     ${(data.groups || []).length ? `
     <table>
