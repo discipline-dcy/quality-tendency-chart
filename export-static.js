@@ -181,7 +181,11 @@ const snapshotPath = tmpSnapshot;
 console.log('  用 Edge 渲染中（视口 ' + W + 'x' + H + '）…');
 let dom;
 try {
-  dom = renderDom(edge, pathToFileURL(snapshotPath).href);
+  // ?loop=0 关掉轮播再渲染。快照是要把 JS 剥光的静态页，轮播到哪一页就
+  // 永远定格在哪一页 —— 不写死的话，导出结果取决于 virtual-time-budget
+  // 和轮播间隔谁快谁慢，哪天调了其中一个，快照就会莫名其妙变成某个类型的
+  // 放大页。定格在三张小图并排那页才是离线兜底该有的样子
+  dom = renderDom(edge, pathToFileURL(snapshotPath).href + '?loop=0');
 } catch (e) {
   console.error('✗ Edge 渲染失败：' + e.message);
   process.exit(1);
