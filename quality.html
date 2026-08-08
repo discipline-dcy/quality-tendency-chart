@@ -295,6 +295,7 @@ const DEMO = {
   range: '示例数据（未连接 OA）',
   target: 96.5,
   targetIsKpi: false,   // 全厂合计那条是推算的参考线，考核表里没有这一档
+  targetYearsMissing: [],   // 非空时顶部亮告警，卡片显示「目标未设」
   minSample: 50,
   rateFloor: 90,        // 纵轴最低画到 90%；低于此值的日期标红
   // 下面这些数字是**互相对得上**的：series 按日合计 = 三个 types 之和，
@@ -636,11 +637,14 @@ function renderTypes(data) {
   const { lo, hi } = rateScale(scaleVals, data.target);
 
   types.forEach(t => {
-    const target = typeof t.target === 'number' ? t.target : data.target;
-    // 大数字用整个区间的良品率 —— 面板标题写的是多少天，数字就得是多少天的。
+    // 目标线可能没有（该年的 KPI 还没配）。**不能退回 data.target** ——
+    // 那是全厂的推算参考线，拿它当某条产线的 KPI 就是编一个数出来。
+    // 没有就是没有，下面卡片显示「目标未设」、不判达标、不画虚线。
+    const target = typeof t.target === 'number' ? t.target : null;
+    // 大数字用整个区间的率 —— 面板标题写的是多少天，数字就得是多少天的。
     // 取最后一天会被小样本带偏
     const cur = typeof t.rate === 'number' ? t.rate : null;
-    const grade = cur === null ? null : GRADE[gradeOf(cur, target)];
+    const grade = (cur === null || target === null) ? null : GRADE[gradeOf(cur, target)];
 
     const card = document.createElement('div');
     card.className = 'spark-card';
@@ -677,7 +681,11 @@ function renderTypes(data) {
 
     const st = document.createElement('div');
     st.className = 'spark-status';
-    if (grade) {
+    if (!grade && target === null && cur !== null) {
+      // 有数、但没有 KPI 可比。把原因写出来，否则「无数据」会被理解成
+      // 「这条线今天没生产」，那是完全不同的一件事
+      st.textContent = `${t.qty.toLocaleString('zh-CN')} 件 · 本年目标未设，不判达标`;
+    } else if (grade) {
       const dot = document.createElement('span');
       dot.style.color = grade.color;
       dot.textContent = grade.icon;
@@ -696,7 +704,7 @@ function renderTypes(data) {
     // 读者会以为是数据在动
     const tg = document.createElement('div');
     tg.className = 'spark-target';
-    tg.textContent = `目标 ${target}%`
+    tg.textContent = (target === null ? '目标未设' : `目标 ${target}%`)
       + (t.noDenomDefect ? ` · ${t.noDenomDefect} 件不良当天无日报，未计入` : '');
     card.appendChild(tg);
 
@@ -709,7 +717,8 @@ function buildSpark(t, target, lo, hi, data, cur, grade) {
   const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img',
     'aria-label': `${t.name}${t.metricLabel || '一次合格率'}趋势，`
                   + `区间 ${cur === null ? '无数据' : cur.toFixed(t.decimals || 1) + '%'}`
-                  + `${grade ? '，' + grade.text : ''}，目标 ${target}%` });
+                  + `${grade ? '，' + grade.text : ''}`
+                  + `，${target === null ? '本年目标未设' : '目标 ' + target + '%'}` });
   const x = i => t.spark.length === 1 ? W / 2 : i * W / (t.spark.length - 1);
   // 定标排除了小样本点，个别点会落到轴外 —— 夹回画布内，否则会画到卡片外面去。
   // 夹过的点仍然画成空心，读者知道它不可信，具体数值在表格视图里
@@ -726,9 +735,13 @@ function buildSpark(t, target, lo, hi, data, cur, grade) {
     return q !== undefined && q > 0 && q < data.minSample;
   };
 
-  // 小图里也保留目标线，否则读者没有判断高低的锚点
-  svg.appendChild(el('line', { x1: 0, x2: W, y1: y(target), y2: y(target),
-    stroke: 'var(--warning)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4', opacity: .75 }));
+  // 小图里也保留目标线，否则读者没有判断高低的锚点。
+  // 该年 KPI 没配时不画 —— 画一条位置全凭兜底值决定的虚线，
+  // 比不画更误导：读者会拿它当基准去读高低
+  if (target !== null) {
+    svg.appendChild(el('line', { x1: 0, x2: W, y1: y(target), y2: y(target),
+      stroke: 'var(--warning)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4', opacity: .75 }));
+  }
 
   for (let i = 1; i < t.spark.length; i++) {
     if (typeof t.spark[i] !== 'number' || typeof t.spark[i - 1] !== 'number') continue;
@@ -778,15 +791,16 @@ function renderTable(data) {
       <thead><tr><th>生产类型</th><th>指标</th>${days}<th>区间</th><th>目标</th><th>状态</th></tr></thead>
       <tbody>
         ${data.types.map(t => {
-          const tg = typeof t.target === 'number' ? t.target : data.target;
-          const gr = typeof t.rate === 'number' ? GRADE[gradeOf(t.rate, tg)] : null;
+          // 同卡片：没配 KPI 就不比，不拿全厂参考线顶上
+          const tg = typeof t.target === 'number' ? t.target : null;
+          const gr = (typeof t.rate === 'number' && tg !== null) ? GRADE[gradeOf(t.rate, tg)] : null;
           // sparse 卡片在图上没有折线，逐日值只能在这里读到 —— 这张表是它的唯一出口
           return `<tr><td>${t.name}</td><td>${t.metricLabel || '一次合格率'}</td>${t.spark.map((v, i) => {
             // 小样本判定用服务端给的 sparkThin：流水是按**环节**判的，
             // 拿当日总量判会漏掉「总量 186 件但电检只有 15 件」那种日子
             const weak = (t.sparkThin || [])[i];
             return `<td${weak ? ' style="color:var(--ink-muted)"' : ''}>${fmt(v)}</td>`;
-          }).join('')}<td>${fmt(t.rate)}</td><td>${tg}</td><td>${gr ? gr.icon + ' ' + gr.text : '—'}</td></tr>`;
+          }).join('')}<td>${fmt(t.rate)}</td><td>${tg === null ? '未设' : tg}</td><td>${gr ? gr.icon + ' ' + gr.text : '—'}</td></tr>`;
         }).join('')}
       </tbody>
     </table>
@@ -877,9 +891,15 @@ function render(data) {
   renderTypes(data);
   renderTable(data);
 
-  // 分子分母不同源的风险要显式暴露，不能静默地错
+  // 分子分母不同源的风险要显式暴露，不能静默地错。
+  // 目标线缺失排在它前面 —— 那是「这块屏现在判不了达标」，比口径偏差更要紧
   const warn = document.getElementById('bannerWarn');
-  if (data.crossCheck && !data.crossCheck.ok) {
+  const missing = data.targetYearsMissing || [];
+  if (missing.length) {
+    warn.textContent = `◆ ${missing.join('、')} 年的目标线还没设，这些日子不画目标线也不判达标。`
+      + `考核表一年一发，请在 config.json 的 targets 里补上「${missing[0]}」那一档。`;
+    warn.classList.add('show');
+  } else if (data.crossCheck && !data.crossCheck.ok) {
     warn.textContent = '◆ 口径提示：' + data.crossCheck.note;
     warn.classList.add('show');
   } else warn.classList.remove('show');

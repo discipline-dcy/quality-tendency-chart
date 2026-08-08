@@ -347,6 +347,7 @@ var DEMO = {
   range: '示例数据（未连接 OA）',
   target: 96.5,
   targetIsKpi: false,   // 全厂合计那条是推算的参考线，考核表里没有这一档
+  targetYearsMissing: [],   // 非空时顶部亮告警，卡片显示「目标未设」
   minSample: 50,
   rateFloor: 90,        // 纵轴最低画到 90%；低于此值的日期标红
   // 下面这些数字是互相对得上的：series 按日合计 = 三个 types 之和，
@@ -782,10 +783,12 @@ function buildSparks(data) {
 
   for (i = 0; i < types.length; i++) {
     var t = types[i];
-    var target = typeof t.target === 'number' ? t.target : data.target;
-    // 大数字用整个区间的良品率 —— 面板标题写的是多少天，数字就得是多少天的
+    // 目标线可能没有（该年的 KPI 还没配）。**不能退回 data.target** ——
+    // 那是全厂的推算参考线，拿它当某条产线的 KPI 就是编一个数出来
+    var target = typeof t.target === 'number' ? t.target : null;
+    // 大数字用整个区间的率 —— 面板标题写的是多少天，数字就得是多少天的
     var cur = typeof t.rate === 'number' ? t.rate : null;
-    var grade = cur === null ? null : GRADE[gradeOf(cur, target)];
+    var grade = (cur === null || target === null) ? null : GRADE[gradeOf(cur, target)];
 
     var card = document.createElement('div');
     card.className = 'spark-card';
@@ -826,7 +829,12 @@ function buildSparks(data) {
 
     var st = document.createElement('div');
     st.className = 'spark-status';
-    if (grade) {
+    if (!grade && target === null && cur !== null) {
+      // 有数、但没有 KPI 可比。写清楚原因，否则「无数据」会被理解成
+      // 「这条线今天没生产」，那是完全不同的一件事
+      st.textContent = (typeof t.qty === 'number' ? group(t.qty) + ' 件 · ' : '')
+        + '本年目标未设，不判达标';
+    } else if (grade) {
       var dot = document.createElement('span');
       dot.className = 'ic';
       dot.style.color = grade.color;
@@ -845,7 +853,7 @@ function buildSparks(data) {
     // 各卡目标线不同，逐卡写出来 —— 否则三条虚线高度不一，会被当成数据在动
     var tg = document.createElement('div');
     tg.className = 'spark-target';
-    tg.textContent = '目标 ' + target + '%'
+    tg.textContent = (target === null ? '目标未设' : '目标 ' + target + '%')
       + (t.noDenomDefect ? ' · ' + t.noDenomDefect + ' 件不良当天无日报，未计入' : '');
     card.appendChild(tg);
 
@@ -906,7 +914,8 @@ function drawSparks(data) {
     var svg = el('svg', { role: 'img', 'aria-label':
       t.name + (t.metricLabel || '一次合格率') + '趋势，区间 ' +
       (s.cur === null ? '无数据' : s.cur.toFixed(t.decimals || 1) + '%') +
-      (s.grade ? '，' + s.grade.text : '') + '，目标 ' + s.target + '%' });
+      (s.grade ? '，' + s.grade.text : '') +
+      '，' + (s.target === null ? '本年目标未设' : '目标 ' + s.target + '%') });
     s.plot.appendChild(svg);
     sizeSvg(svg, W, H);
 
@@ -918,9 +927,12 @@ function drawSparks(data) {
     };
     var weakAt = function (k) { return thinAt(t, k, data); };
 
-    // 小图里也保留目标线，否则读者没有判断高低的锚点
-    svg.appendChild(el('line', { x1: 0, x2: W, y1: y(s.target), y2: y(s.target),
-      stroke: 'var(--warning)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4', opacity: 0.75 }));
+    // 小图里也保留目标线，否则读者没有判断高低的锚点。
+    // 本年 KPI 没配就不画，理由同放大页
+    if (s.target !== null) {
+      svg.appendChild(el('line', { x1: 0, x2: W, y1: y(s.target), y2: y(s.target),
+        stroke: 'var(--warning)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4', opacity: 0.75 }));
+    }
 
     for (j = 1; j < sp.length; j++) {
       if (typeof sp[j] !== 'number' || typeof sp[j - 1] !== 'number') continue;
@@ -988,8 +1000,8 @@ function renderDots() {
 function buildFocus(data, t) {
   var box = document.getElementById('focus');
   box.textContent = '';
-  var target = typeof t.target === 'number' ? t.target : data.target;
-  var grade = typeof t.rate === 'number' ? GRADE[gradeOf(t.rate, target)] : null;
+  var target = typeof t.target === 'number' ? t.target : null;
+  var grade = (typeof t.rate === 'number' && target !== null) ? GRADE[gradeOf(t.rate, target)] : null;
 
   var head = document.createElement('div');
   head.className = 'focus-head';
@@ -1020,7 +1032,13 @@ function buildFocus(data, t) {
 
   var meta = document.createElement('div');
   meta.className = 'focus-meta';
-  if (grade) {
+  // 有数但本年没配 KPI：照常把量报出来，只是不判达标。
+  // 走 else 分支显示「无数据」会把「没目标」说成「没生产」
+  if (!grade && target === null && typeof t.rate === 'number') {
+    meta.textContent = group(t.qty) + ' 件检验 / ' + group(t.defect) + ' 件不良'
+      + ' · 本年目标未设，不判达标'
+      + (t.source ? ' · 来源 ' + t.source : '');
+  } else if (grade) {
     // 流水放大页把三个环节的合格率摊出来。看板的头号任务是「哪条线拖后腿」，
     // 翻到流水这一页，下一个问题立刻就是「哪个环节拖后腿」—— 实测电检最低，
     // 而且检验量不到另两个环节的一半。不写出来，读者只能看到一个 82.4%
@@ -1054,7 +1072,7 @@ function drawFocus(data, t) {
   if (!plot) return;
   plot.textContent = '';
 
-  var target = typeof t.target === 'number' ? t.target : data.target;
+  var target = typeof t.target === 'number' ? t.target : null;
   var sc = typeScale(data), lo = sc.lo, hi = sc.hi;
   var sp = t.spark, j;
 
@@ -1096,11 +1114,14 @@ function drawFocus(data, t) {
       'font-variant-numeric': 'tabular-nums' }, vs[vi] + '%'));
   }
 
-  // 目标线是真正的阈值，虚线在这里是正当用法
-  svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: y(target), y2: y(target),
-    stroke: 'var(--warning)', 'stroke-width': 2, 'stroke-dasharray': '8 6', 'stroke-linecap': 'round' }));
-  svg.appendChild(el('text', { x: padL + plotW + 10, y: y(target) + 6,
-    fill: 'var(--ink-2)', 'font-size': 17 }, '目标 ' + target + '%'));
+  // 目标线是真正的阈值，虚线在这里是正当用法。
+  // 本年 KPI 没配就不画 —— 一条位置全凭兜底值决定的虚线比不画更误导
+  if (target !== null) {
+    svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: y(target), y2: y(target),
+      stroke: 'var(--warning)', 'stroke-width': 2, 'stroke-dasharray': '8 6', 'stroke-linecap': 'round' }));
+    svg.appendChild(el('text', { x: padL + plotW + 10, y: y(target) + 6,
+      fill: 'var(--ink-2)', 'font-size': 17 }, '目标 ' + target + '%'));
+  }
 
   for (j = 1; j < sp.length; j++) {
     if (typeof sp[j] !== 'number' || typeof sp[j - 1] !== 'number') continue;
@@ -1232,14 +1253,15 @@ function renderTable(data) {
             '<th>区间</th><th>目标</th><th>状态</th></tr></thead><tbody>';
     for (i = 0; i < types.length; i++) {
       var t = types[i];
-      var tg = typeof t.target === 'number' ? t.target : data.target;
-      var gr = typeof t.rate === 'number' ? GRADE[gradeOf(t.rate, tg)] : null;
+      // 同卡片：没配 KPI 就不比，不拿全厂参考线顶上
+      var tg = typeof t.target === 'number' ? t.target : null;
+      var gr = (typeof t.rate === 'number' && tg !== null) ? GRADE[gradeOf(t.rate, tg)] : null;
       html += '<tr><td>' + esc(t.name) + '</td><td>' + esc(t.metricLabel || '一次合格率') + '</td>';
       for (j = 0; j < t.spark.length; j++) {
         html += '<td' + (thinAt(t, j, data) ? ' style="color:var(--ink-muted)"' : '') +
                 '>' + fmt(t.spark[j]) + '</td>';
       }
-      html += '<td>' + fmt(t.rate) + '</td><td>' + tg + '</td>' +
+      html += '<td>' + fmt(t.rate) + '</td><td>' + (tg === null ? '未设' : tg) + '</td>' +
               '<td>' + (gr ? gr.icon + ' ' + gr.text : '—') + '</td></tr>';
     }
     html += '</tbody></table>';
@@ -1351,9 +1373,15 @@ function applyData(data) {
   buildLoopPages(data);
   renderTable(data);
 
-  // 分子分母不同源的风险要显式暴露，不能静默地错
+  // 分子分母不同源的风险要显式暴露，不能静默地错。
+  // 目标线缺失排在它前面 —— 那是「这块屏现在判不了达标」，比口径偏差更要紧
   var warn = document.getElementById('bannerWarn');
-  if (data.crossCheck && !data.crossCheck.ok) {
+  var missing = data.targetYearsMissing || [];
+  if (missing.length) {
+    warn.textContent = '◆ ' + missing.join('、') + ' 年的目标线还没设，这些日子不画目标线也不判达标。'
+      + '考核表一年一发，请在 config.json 的 targets 里补上「' + missing[0] + '」那一档。';
+    warn.className = 'banner warn show';
+  } else if (data.crossCheck && !data.crossCheck.ok) {
     warn.textContent = '◆ 口径提示：' + data.crossCheck.note;
     warn.className = 'banner warn show';
   } else warn.className = 'banner warn';

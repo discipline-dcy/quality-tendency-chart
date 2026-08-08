@@ -91,15 +91,35 @@ const DEFAULTS = {
   // ⚠ 考核表的公式栏写的是「**当月**合格数量/总数量」，而看板默认 14 天窗口。
   //   跨月时看板的数和考核的数不是一回事，大屏上已注明。
   //
-  // 兼容：这里也接受一个标量（如 96.5），表示四个季度用同一个数。
+  // ⚠ **按年分档，明年的数必须手动填。** 考核表是一年一发的，2027 年的
+  //   目标只有品质部发了才知道。这里只内置 2026 那一档 ——
+  //   跨到 2027 年而 config.json 里没填 2027，`targetFor()` 会返回 null，
+  //   卡片上不画目标线、不判达标、看板顶部亮一条告警。
   //
-  // 键必须是 OA「检验类型」字段的原值，改了就查不到表。屏上显示的名字
+  //   这是有意做成「响的」而不是「静的」：早先 quarterOf() 只看月份不看
+  //   年份，2027-01-01 那天看板会不声不响地拿 2026 的 Q1 目标当今年的 KPI
+  //   接着画，一条过期的线挂在车间墙上，没有任何迹象说明它过期了。
+  //   宁可没有线，也不要一条假的线。
+  //
+  // 怎么填明年的：config.json 里写
+  //   "targets": { "2027": { "流水生产": [.., .., .., ..], ... } }
+  //   只写新增的年份就行，2026 这档会自动保留；同一年里只写要改的类型即可。
+  //
+  // 兼容：每个类型也接受一个标量（如 96.5），表示四个季度用同一个数。
+  //
+  // 类型名必须是 OA「检验类型」字段的原值，改了就查不到表。屏上显示的名字
   // 走下面的 TYPE_LABELS。
   targets: {
-    '流水生产': [87,   88,   90,   92  ],   // 一次直通率，不是良品率
-    '成品改型': [94,   95,   96,   98  ],
-    '清分机':   [86,   89,   92,   95  ],
-    '组件生产': [99.5, 99.6, 99.7, 99.7],   // 合格数 ÷ 检验数
+    // 2026：取自品质部《考核指标》表。Q1/Q2 已成过去，但 days 调大时
+    // 窗口会回溯到，所以整年四档都留着
+    2026: {
+      '流水生产': [87,   88,   90,   92  ],   // 一次直通率，不是良品率
+      '成品改型': [94,   95,   96,   98  ],
+      '清分机':   [86,   89,   92,   95  ],
+      '组件生产': [99.5, 99.6, 99.7, 99.7],   // 合格数 ÷ 检验数
+    },
+    // 2027 及以后：等品质部发新考核表，手动填进 config.json。
+    // 这里**故意不留默认值** —— 留了就等于替品质部编一个 KPI
   },
   // 实测日检验量在 98 ~ 751 之间（单条 1~166），200 这个阈值会把一半的
   // 日子误标成「样本不足」。降到 50，接入后按实际检验量再调
@@ -150,12 +170,40 @@ function loadConfig() {
   return merged(raw);
 }
 
-// targets 是嵌套对象，浅合并会让 config.json 里只写一个类型就把其余类型的
-// 默认目标全抹掉 —— 那三张卡会静默地退回全厂目标线，且没有任何提示。
-// 单独把它合一层。
+// targets 现在是「年 → 类型 → 四个季度」两层嵌套，必须逐层合并：
+//   只合一层 → config.json 里写了 2027，2026 那一档整个没了；
+//   只合两层的外层 → 2027 里只写「流水生产」，同年其余三个类型没了。
+// 两处都会让卡片静默地失去目标线，所以两层都合。
+function mergeTargets(base, raw) {
+  const out = {};
+  for (const y of Object.keys(base)) out[y] = { ...base[y] };
+  if (!raw || typeof raw !== 'object') return out;
+
+  // 兼容老写法：config.example.json 早先给的是不分年的「类型 → 四季度」。
+  // 键不是四位年份就当它是老格式，归到 2026 那一档，并提醒改过来 ——
+  // 悄悄接受一个含义已经变了的配置，比直接报错更难查。
+  const looksLikeYear = k => /^\d{4}$/.test(k);
+  if (Object.keys(raw).length && !Object.keys(raw).some(looksLikeYear)) {
+    console.warn('⚠ config.json 的 targets 是老格式（不分年份）。已按 2026 那一档读入。');
+    console.warn('  新格式是 "targets": { "2026": { "流水生产": [..] } }，目标线现在按年分档，');
+    console.warn('  明年的数要手动填。详见 config.example.json。');
+    out[2026] = { ...(out[2026] || {}), ...raw };
+    return out;
+  }
+
+  for (const y of Object.keys(raw)) {
+    if (!looksLikeYear(y)) {
+      console.warn(`⚠ config.json 的 targets 里有个键「${y}」不是四位年份，已忽略。`);
+      continue;
+    }
+    out[y] = { ...(out[y] || {}), ...raw[y] };
+  }
+  return out;
+}
+
 function merged(raw) {
   const out = { ...DEFAULTS, ...raw, ...envOverrides() };
-  out.targets = { ...DEFAULTS.targets, ...(raw && raw.targets) };
+  out.targets = mergeTargets(DEFAULTS.targets, raw && raw.targets);
   return out;
 }
 
@@ -402,18 +450,36 @@ function buildRange(days) {
 // ── 季度 KPI 取值 ─────────────────────────────────────────────
 // 质量周月报告工具是按周期（周/月）落季度（main.jsx:240 targetRateForPeriod），
 // 趋势图是按日 —— 同一套逻辑，粒度换成天。
-// 兼容 config.json 里写成标量的老写法（四个季度同一个数）。
+// 按「年 + 季度」两级查：考核表一年一发，年份不对就不是这一年的 KPI。
 function quarterOf(day) {
   const m = Number(String(day).slice(5, 7));
   return Number.isFinite(m) ? Math.min(3, Math.max(0, Math.floor((m - 1) / 3))) : 0;
 }
+function yearOf(day) {
+  return String(day).slice(0, 4);
+}
+
+// 查不到返回 null，**不退回 cfg.target**。
+// 早先这里兜底到 96.5，两个后果都很坏：① 跨年之后每张卡都悄悄换成一条
+// 推算的全厂参考线，看着仍是「目标 96.5%」，没人知道 KPI 已经过期；
+// ② 哪天多出一个新检验类型，它也会凭空得到一条目标线。
+// 没有 KPI 就是没有 KPI，让它显示「目标未设」比编一个数诚实。
 function targetFor(key, day) {
-  const t = cfg.targets && cfg.targets[key];
+  const row = cfg.targets && cfg.targets[yearOf(day)];
+  if (!row) return null;
+  const t = row[key];
   if (Array.isArray(t)) {
     const v = t[quarterOf(day)];
-    return typeof v === 'number' ? v : cfg.target;
+    return typeof v === 'number' ? v : null;
   }
-  return typeof t === 'number' ? t : cfg.target;
+  return typeof t === 'number' ? t : null;
+}
+
+// 区间里哪些年份没配目标。14 天窗口跨年时会同时含两个年份，
+// 所以按区间里真实出现的年份算，不是只看「今年」。
+function missingTargetYears(allDays) {
+  const years = [...new Set(allDays.map(yearOf))];
+  return years.filter(y => !cfg.targets || !cfg.targets[y]).sort();
 }
 
 // OA「检验类型」的原值 → 屏上显示的名字。只影响显示：目标线查表、
@@ -880,6 +946,9 @@ async function fetchQuality() {
     // 前端据此把它画成「参考」而不是「目标」，顶部大数字也不做达标判定 ——
     // 拿一条推算线去给一个混合口径的数打红绿灯，红绿灯本身就是假的。
     targetIsKpi: false,
+    // 区间里没配目标线的年份。非空时前端亮告警条，并把受影响的卡片标成
+    // 「目标未设」。看板最怕的不是缺一条线，是缺了没人知道
+    targetYearsMissing: missingTargetYears(allDays),
     minSample: cfg.minSample,
     rateFloor: cfg.rateFloor,
     summary: {
@@ -1307,6 +1376,20 @@ function serve() {
       console.log('    1) 命令行：node server.js --set-account <OA账号>   ← 不用浏览器');
       console.log('    2) 编辑 config.json，填 userCode / password（照 config.example.json 抄）');
       console.log(`    3) 浏览器打开 http://localhost:${PORT}/setup 登录一次`);
+    }
+    // 目标线按年分档，明年的数要手动填。跨年那天如果没填，看板上四张卡
+    // 会一起失去目标线 —— 与其等大屏出问题被人发现，不如每次启动就提醒。
+    // 提前一个季度开始念叨：Q4 就该去催品质部要明年的考核表了。
+    const thisYear = String(new Date().getFullYear());
+    const nextYear = String(new Date().getFullYear() + 1);
+    if (!cfg.targets || !cfg.targets[thisYear]) {
+      console.log('');
+      console.log(`  ⚠ ${thisYear} 年的目标线没配！卡片上不会画目标线，也不判达标。`);
+      console.log(`    在 config.json 里填：  "targets": { "${thisYear}": { "流水生产": [.., .., .., ..], ... } }`);
+    } else if (new Date().getMonth() >= 9 && !cfg.targets[nextYear]) {
+      console.log('');
+      console.log(`  ⚠ 快跨年了，${nextYear} 年的目标线还没配。`);
+      console.log(`    到 1 月 1 日那天四张卡会一起失去目标线 —— 趁早找品质部要明年的考核表。`);
     }
     console.log('  按 Ctrl+C 停止');
     console.log('─'.repeat(56));
