@@ -221,9 +221,24 @@
 
   /* 页码圆点：让人知道「还有几页」「等多久轮回来」。
      没有这个，轮播在观众眼里就是屏幕自己在乱跳 */
-  .dots { margin-left: auto; font-size: 1rem; color: var(--ink-muted); letter-spacing: .35em; }
+  .dots { margin-left: auto; font-size: 1rem; color: var(--ink-muted); letter-spacing: .35em;
+          display: flex; align-items: center; gap: .1em; }
   .dots .on { color: var(--ink); }
   .panel-title { display: flex; align-items: baseline; }
+
+  /* 翻页按钮。触摸屏上圆点太小点不准（4K 屏上一个点也就十几像素），
+     所以另给两个大靶子；命中区域用 padding 撑开，不靠字号 */
+  .dots .navbtn {
+    background: none; border: 0; color: var(--ink-muted); cursor: pointer;
+    font: inherit; font-size: 1.5em; line-height: 1; padding: .1em .45em;
+    letter-spacing: 0; border-radius: .2em; -webkit-tap-highlight-color: transparent;
+  }
+  .dots .navbtn:hover, .dots .navbtn:active { color: var(--ink); background: rgba(255,255,255,.08); }
+  .dots .dot { cursor: pointer; padding: 0 .05em; }
+
+  /* 手动接管时的倒计时。必须写出来 —— 大屏平时是自己在动的，
+     突然不动了，不写清楚「N 秒后恢复」就会被当成卡死了 */
+  .loop-hint { font-size: .8rem; color: var(--warning); margin-left: .8em; white-space: nowrap; }
 
   /* ── 表格视图：每张图的等价物，不靠颜色传信息 ───────────
      大屏上**常驻展开**，不做折叠。折叠是给有鼠标的人准备的交互，
@@ -306,7 +321,7 @@
   </div>
 
   <div class="card groups">
-    <h2 class="panel-title"><span id="groupTitle">各生产类型合格率</span><span class="sub" id="groupSub">共用同一纵轴，形状可直接互比</span><span class="dots" id="loopDots"></span></h2>
+    <h2 class="panel-title"><span id="groupTitle">各生产类型合格率</span><span class="sub" id="groupSub">共用同一纵轴，形状可直接互比</span><span class="dots" id="loopDots"></span><span class="loop-hint" id="loopHint"></span></h2>
     <div class="stage" id="stage">
       <div class="sparks" id="sparks"></div>
       <div class="focus" id="focus"></div>
@@ -983,6 +998,59 @@ var LOOP_PAGES = [];        // [{kind:'all'}, {kind:'type', i:n}, …]
 var loopIdx = 0;
 var GROUP_SUB_ALL = '';     // 并排页的副标题，切回来时要还原
 
+// ── 手动接管 ─────────────────────────────────────────────────
+// 有人要自己翻的时候，屏上所有会自己动的东西都停下来；人走开一会儿，
+// 再自动接着转。
+//
+// 为什么是**一个**共享状态、而不是每处各管各的：这块屏平时无人值守，
+// 「有人在操作它」是一个整体状态。如果只停轮播、表格还在自顾自地滚，
+// 人一边想看清某一页、一边被旁边滚动的表格晃眼，等于没停。
+//
+// 为什么是「空闲后恢复」而不是「按一下暂停、再按一下继续」：车间没人会
+// 记得按第二下。看完就走开是常态，屏必须自己回到无人值守的样子。
+var MANUAL_RESUME_MS = 60000;
+// 现场调：网址后面加 ?manual=30 就是 30 秒后恢复，允许 10~600，越界当没写
+(function () {
+  var m = /[?&]manual=([^&]*)/.exec(location.search);
+  if (!m) return;
+  var n = parseFloat(decodeURIComponent(m[1]));
+  if (isFinite(n) && n >= 10 && n <= 600) MANUAL_RESUME_MS = n * 1000;
+})();
+var manualUntil = 0;
+
+function manualHold() { manualUntil = Date.now() + MANUAL_RESUME_MS; }
+function manualActive() { return Date.now() < manualUntil; }
+// 还剩几秒恢复，给倒计时用
+function manualLeft() {
+  var ms = manualUntil - Date.now();
+  return ms > 0 ? Math.ceil(ms / 1000) : 0;
+}
+
+// 翻到第 i 页（可越界，自动绕回）。手动翻页统一走这里 ——
+// 键盘、按钮、圆点、滑动四个入口，行为必须完全一致
+function loopGo(i) {
+  if (!LOOP_ON || LOOP_PAGES.length < 2) return;
+  var n = LOOP_PAGES.length;
+  loopIdx = ((i % n) + n) % n;
+  manualHold();
+  // 把「上次翻页时刻」推到现在：恢复自动之后，当前这页要完整停够一轮，
+  // 而不是恢复的瞬间就被翻走 —— 那会让人觉得手动翻页白翻了
+  loopLastFlip = Date.now();
+  showLoopPage();
+  renderLoopHint();
+}
+function loopStep(d) { loopGo(loopIdx + d); }
+
+// 倒计时文字。每秒由 tickClock 调
+function renderLoopHint() {
+  var el = document.getElementById('loopHint');
+  if (!el) return;
+  var txt = (LOOP_ON && LOOP_PAGES.length > 1 && manualActive())
+    ? '手动翻页中 · ' + manualLeft() + ' 秒后恢复自动'
+    : '';
+  if (el.textContent !== txt) el.textContent = txt;
+}
+
 function buildLoopPages(data) {
   var types = data.types || [], i;
   LOOP_PAGES = [{ kind: 'all' }];
@@ -992,15 +1060,46 @@ function buildLoopPages(data) {
   if (loopIdx >= LOOP_PAGES.length) loopIdx = 0;
 }
 
+// 圆点连同左右翻页按钮一起由这里渲染。**不写死在 HTML 里**，是因为
+// export-static.js 导出的零 JS 快照会原样保留 HTML —— 写死的话，
+// 静态快照上会留下两个按不动的按钮。这里 !LOOP_ON 直接清空，
+// 快照（用 ?loop=0 渲染）自然就是干净的
 function renderDots() {
   var box = document.getElementById('loopDots');
   if (!LOOP_ON || LOOP_PAGES.length < 2) { box.textContent = ''; return; }
-  var html = '', i;
+  var html = '<button type="button" class="navbtn" data-step="-1" aria-label="上一页">‹</button>', i;
   for (i = 0; i < LOOP_PAGES.length; i++) {
-    html += i === loopIdx ? '<span class="on">●</span>' : '<span>○</span>';
+    html += '<span class="dot' + (i === loopIdx ? ' on' : '') + '" data-i="' + i + '" '
+          + 'role="button" tabindex="0" aria-label="第 ' + (i + 1) + ' 页">'
+          + (i === loopIdx ? '●' : '○') + '</span>';
   }
+  html += '<button type="button" class="navbtn" data-step="1" aria-label="下一页">›</button>';
   box.innerHTML = html;
 }
+
+// 圆点和按钮用事件委托，因为 renderDots 每翻一页就重建一次 DOM，
+// 逐个绑监听会随翻页次数堆积
+(function () {
+  var box = document.getElementById('loopDots');
+  if (!box) return;
+  box.addEventListener('click', function (ev) {
+    var t = ev.target;
+    while (t && t !== box) {
+      // 不 stopPropagation：页面底部那个「首次点击进全屏」的监听挂在
+      // document 上，拦住冒泡的话，第一下点在翻页按钮上就进不了全屏了
+      if (t.getAttribute && t.getAttribute('data-step')) {
+        loopStep(Number(t.getAttribute('data-step')));
+        return;
+      }
+      if (t.className && String(t.className).indexOf('dot') >= 0
+          && t.getAttribute && t.getAttribute('data-i') !== null) {
+        loopGo(Number(t.getAttribute('data-i')));
+        return;
+      }
+      t = t.parentNode;
+    }
+  });
+})();
 
 // 放大页的 DOM。每翻一页重建 —— 类型不同，内容全不一样，
 // 复用节点省不下什么，反而容易漏掉上一页残留的状态
@@ -1214,6 +1313,9 @@ var loopLastFlip = 0;
 function loopTick() {
   if (!LOOP_ON || LOOP_PAGES.length < 2) return;
   var now = Date.now();
+  // 手动接管期间不翻，并且把「上次翻页时刻」跟着推 —— 这样倒计时一到，
+  // 当前页还能完整停够一轮，而不是恢复的瞬间就被翻走
+  if (manualActive()) { loopLastFlip = now; return; }
   if (!loopLastFlip) { loopLastFlip = now; return; }   // 第一页也要完整停够一轮
   if (now - loopLastFlip < LOOP_MS) return;
   loopLastFlip = now;
@@ -1225,6 +1327,48 @@ function loopTick() {
 function loopArm() {
   if (!loopLastFlip) loopLastFlip = Date.now();
 }
+
+// ── 手动翻页的三个入口（第四个是圆点，在 renderDots 那边） ────────
+//
+// 触摸屏上左右滑最自然，但**只绑在图表区 #stage 上**：绑到整页的话，
+// 在表格里上下滑时手指稍微斜一点就会误翻页，而表格是唯一能逐日读数的地方。
+(function () {
+  var stage = document.getElementById('stage');
+  if (!stage) return;
+  var x0 = 0, y0 = 0, tracking = false;
+  // 滑多远才算一次翻页。太小了会被「点一下时手指的轻微位移」误触发，
+  // 4K 屏上 60px 大约是一个指头宽
+  var MIN_SWIPE = 60;
+
+  stage.addEventListener('touchstart', function (ev) {
+    if (!ev.touches || ev.touches.length !== 1) { tracking = false; return; }
+    x0 = ev.touches[0].clientX; y0 = ev.touches[0].clientY; tracking = true;
+  }, { passive: true });
+
+  stage.addEventListener('touchend', function (ev) {
+    if (!tracking) return;
+    tracking = false;
+    var t = (ev.changedTouches && ev.changedTouches[0]) || null;
+    if (!t) return;
+    var dx = t.clientX - x0, dy = t.clientY - y0;
+    // 竖着滑的意图是滚页面，别当成翻页
+    if (Math.abs(dx) < MIN_SWIPE || Math.abs(dx) <= Math.abs(dy)) return;
+    loopStep(dx < 0 ? 1 : -1);      // 左滑 = 下一页，跟手指走的方向一致
+  }, { passive: true });
+})();
+
+// 键盘：给接了键鼠的机器和在电脑上开 /board 预览的人用。
+// 左右＝翻页，空格＝立刻手动接管（想让它别动一会儿）
+document.addEventListener('keydown', function (ev) {
+  if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
+  var tag = ev.target && ev.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if (ev.key === 'ArrowRight')      { loopStep(1);  ev.preventDefault(); }
+  else if (ev.key === 'ArrowLeft')  { loopStep(-1); ev.preventDefault(); }
+  else if (ev.key === ' ' || ev.key === 'Spacebar') {
+    manualHold(); renderLoopHint(); ev.preventDefault();
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════
 // 表格视图 —— 每张图的等价物。大屏上折叠着，但值永远拿得到，
@@ -1313,6 +1457,9 @@ function renderTable(data) {
   if (html === LAST_TABLE_HTML) return;
   LAST_TABLE_HTML = html;
   document.getElementById('tableView').innerHTML = html;
+  // 有人正手动看表格的时候不回顶：数据每 60 秒刷一次，正读到一半被拉回
+  // 表头，跟表格自己跳没有区别。等恢复自动了再从当前位置接着滚
+  if (manualActive()) { autoScrollSync(); return; }
   autoScrollReset();
 }
 
@@ -1518,7 +1665,9 @@ function autoScrollSync() {
   var hint = document.getElementById('tvHint');
   // 这个函数每秒都被心跳调一次，文字没变就别写 DOM ——
   // 每秒一次无谓的 textContent 赋值会带来每秒一次的布局失效
-  var label = over <= 2 ? '' : '自动滚动 · 到底回顶';
+  var label = over <= 2 ? ''
+            : (manualActive() ? '手动滚动中 · ' + manualLeft() + ' 秒后恢复自动'
+                              : '自动滚动 · 到底回顶');
   if (hint && hint.textContent !== label) hint.textContent = label;
 
   if (over <= 2) {
@@ -1549,6 +1698,24 @@ function stopAutoScroll() {
   asLast = 0;               // 下次接回来时重新起算，别把停摆那段算成 dt
 }
 
+// 表格上的手动操作 → 接管。触摸和滚轮都算。
+//
+// scroll 事件里要把 asPos 同步成人停下的位置，否则恢复自动的那一刻，
+// 表格会从人翻走之前的老位置「跳」回去 —— 看着像刚才白翻了。
+// 自动滚动期间我们自己写 scrollTop 也会触发 scroll，所以只在手动接管
+// 状态下才同步，避免自己跟自己打架
+(function () {
+  var box = document.getElementById('tvBox');
+  if (!box) return;
+  var take = function () { manualHold(); autoScrollSync(); };
+  box.addEventListener('touchstart', take, { passive: true });
+  box.addEventListener('wheel', take, { passive: true });
+  box.addEventListener('mousedown', take);
+  box.addEventListener('scroll', function () {
+    if (manualActive()) asPos = box.scrollTop;
+  }, { passive: true });
+})();
+
 function startAutoScroll() {
   stopAutoScroll();
   asTimer = setInterval(function () {
@@ -1558,6 +1725,11 @@ function startAutoScroll() {
     // 这一拍量不出来（全屏切换中）就跳过，**不停表** ——
     // 停在这里等于把恢复的机会交给一个不一定会来的 fit()
     if (over <= 2) { asLast = 0; return; }
+
+    // 有人在操作这块屏就别动。这一拍原本每次都会写 scrollTop ——
+    // 人用手指往下拨，下一拍就被拽回去，等于表格根本没法手动看。
+    // asLast 清零，恢复时重新起算，别把停的这段算进 dt 一帧冲到底
+    if (manualActive()) { asLast = 0; return; }
 
     var now = Date.now();
     var dt = asLast ? now - asLast : AS_STEP_MS;
@@ -1712,6 +1884,7 @@ function tickClock() {
   document.getElementById('clock').textContent = hms(new Date());
   loopTick();
   autoScrollSync();
+  renderLoopHint();   // 手动接管的倒计时，搭这趟每秒的车
 }
 
 // ═══════════════════════════════════════════════════════════════
