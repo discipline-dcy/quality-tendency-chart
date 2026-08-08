@@ -184,8 +184,12 @@ try {
   // ?loop=0 关掉轮播再渲染。快照是要把 JS 剥光的静态页，轮播到哪一页就
   // 永远定格在哪一页 —— 不写死的话，导出结果取决于 virtual-time-budget
   // 和轮播间隔谁快谁慢，哪天调了其中一个，快照就会莫名其妙变成某个类型的
-  // 放大页。定格在三张小图并排那页才是离线兜底该有的样子
-  dom = renderDom(edge, pathToFileURL(snapshotPath).href + '?loop=0');
+  // 放大页。定格在三张小图并排那页才是离线兜底该有的样子。
+  //
+  // ?static=1 让页面跳过所有交互控件（翻页按钮、目标线设置）。这个不能靠
+  // 「控件是 JS 插的」来指望自动消失 —— 这里是先渲染再剥 JS，运行时插进
+  // DOM 的东西照样会被烤进来，成了一排按不动的死按钮
+  dom = renderDom(edge, pathToFileURL(snapshotPath).href + '?loop=0&static=1');
 } catch (e) {
   console.error('✗ Edge 渲染失败：' + e.message);
   process.exit(1);

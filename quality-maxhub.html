@@ -274,6 +274,62 @@
   .ft { margin-top: .9rem; font-size: .95rem; color: var(--ink-muted); display: flex; flex-wrap: wrap; }
   .ft span { margin-right: 1.5em; }
 
+  /* ── 目标线设置 ─────────────────────────────────────────
+     尺寸全用 rem，跟着 fit() 的根字号缩放走 —— 写死 px 的话，
+     换一块分辨率不同的屏，弹窗会小到点不中或大到装不下。
+     触摸操作，所有可点的东西按指头宽度给，不按视觉重量给 */
+  .hd .btn {
+    margin-left: 1.2rem; font: inherit; font-size: 1rem;
+    padding: .45em 1em; border-radius: .35rem; cursor: pointer;
+    background: var(--surface); color: var(--ink-muted);
+    border: 1px solid var(--grid); -webkit-tap-highlight-color: transparent;
+  }
+  .hd .btn:active { color: var(--ink); background: rgba(255,255,255,.1); }
+
+  .modal-back {
+    position: fixed; left: 0; top: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.72); display: none; z-index: 90;
+    align-items: center; justify-content: center; padding: 2rem;
+  }
+  .modal-back.show { display: flex; }
+  .modal {
+    background: var(--bg); border: 1px solid var(--grid); border-radius: .6rem;
+    padding: 1.6rem 1.8rem; width: 100%; max-width: 52rem;
+    max-height: 88vh; overflow: auto;
+  }
+  .modal h2 { margin: 0 0 .3rem; font-size: 1.6rem; font-weight: 600; }
+  .modal .hint { color: var(--ink-muted); font-size: .95rem; line-height: 1.7; margin: 0 0 1rem; }
+  .modal table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; font-size: 1.1rem; }
+  .modal th, .modal td { padding: .5rem .4rem; text-align: center; border-bottom: 1px solid var(--grid); }
+  .modal th:first-child, .modal td:first-child { text-align: left; white-space: nowrap; }
+  /* 输入框按指头宽度给。安卓 WebView 上 type=number 会拉起数字小键盘，
+     省得在 4K 屏上用全键盘找数字 */
+  .modal input {
+    width: 5.5rem; font: inherit; font-size: 1.15rem; text-align: center;
+    padding: .45rem .2rem; background: var(--surface); color: var(--ink);
+    border: 1px solid var(--grid); border-radius: .3rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .modal input.bad { border-color: var(--critical); color: var(--critical); }
+  .modal .rowlab { color: var(--ink-2); }
+  .modal .metric { color: var(--ink-muted); font-size: .85em; margin-left: .4em; }
+  .modal select {
+    font: inherit; font-size: 1.1rem; padding: .4rem .6rem; background: var(--surface);
+    color: var(--ink); border: 1px solid var(--grid); border-radius: .3rem;
+  }
+  .modal .mbtn {
+    font: inherit; font-size: 1.15rem; padding: .55em 1.5em; border-radius: .35rem;
+    cursor: pointer; background: var(--surface); color: var(--ink-2);
+    border: 1px solid var(--grid); -webkit-tap-highlight-color: transparent;
+  }
+  .modal .mbtn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .modal .mbtn:disabled { opacity: .5; }
+  .modal-bar { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
+  .modal-bar .grow { margin-left: auto; }
+  .modal-msg { font-size: 1rem; min-height: 1.5em; margin-bottom: .5rem; }
+  .modal-msg.err { color: var(--critical); }
+  .yearbar { display: flex; align-items: center; gap: .7rem; margin-bottom: 1rem; flex-wrap: wrap; }
+
   /* 这里原来有一组链接样式，服务的是页脚那个「配置 OA 账号」入口。
      入口去掉之后整个页面一个 <a> 都没有了 —— 大屏是只读看板，本来也不该有
      任何可点的东西。样式一并删掉，别留着误导后来改这个文件的人。 */
@@ -286,7 +342,39 @@
   <div class="hd">
     <h1>质量趋势</h1>
     <span class="range" id="range">—</span>
+    <!-- 「目标线设置」按钮由 JS 插进 #hdTools，不写死在这里：
+         export-static.js 导出的零 JS 快照会原样保留 HTML，写死的话快照上
+         会留下一个按不动的按钮。同理，连不上服务时也不插 -->
+    <span id="hdTools"></span>
     <span class="clock" id="clock">--:--:--</span>
+  </div>
+
+  <!-- 目标线设置弹窗。表格由 JS 按当前配置生成 -->
+  <div class="modal-back" id="targetModal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tmTitle">
+      <h2 id="tmTitle">目标线设置</h2>
+      <p class="hint">
+        值来自品质部《考核指标》表，一年一发，所以按年分档。四个数依次是
+        Q1 / Q2 / Q3 / Q4。留空＝该季度不设目标，屏上显示「目标未设」、不判达标。<br>
+        保存后立刻生效，不用重启服务。
+      </p>
+      <div class="yearbar">
+        <span>年份</span>
+        <select id="tmYear"></select>
+        <button type="button" class="mbtn" id="tmAddYear">＋ 加一年</button>
+        <span class="metric" id="tmYearNote"></span>
+      </div>
+      <table>
+        <thead><tr><th>生产类型</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th></tr></thead>
+        <tbody id="tmRows"></tbody>
+      </table>
+      <div class="modal-msg" id="tmMsg"></div>
+      <div class="modal-bar">
+        <span class="grow"></span>
+        <button type="button" class="mbtn" id="tmCancel">取消</button>
+        <button type="button" class="mbtn primary" id="tmSave">保存</button>
+      </div>
+    </div>
   </div>
 
   <div class="banner err"  id="bannerErr"></div>
@@ -1019,7 +1107,14 @@ var MANUAL_RESUME_MS = 30000;
 var manualUntil = 0;
 
 function manualHold() { manualUntil = Date.now() + MANUAL_RESUME_MS; }
-function manualActive() { return Date.now() < manualUntil; }
+function manualActive() {
+  // 目标线弹窗开着的整段时间都算「有人在操作」，不看倒计时 ——
+  // 有人可能对着四个季度的数琢磨好几分钟，倒计时一到就在弹窗背后
+  // 开始翻页、滚表格，关掉弹窗会看到画面已经跳到别处了
+  var back = document.getElementById('targetModal');
+  if (back && back.className.indexOf('show') >= 0) return true;
+  return Date.now() < manualUntil;
+}
 // 还剩几秒恢复，给倒计时用
 function manualLeft() {
   var ms = manualUntil - Date.now();
@@ -1939,6 +2034,195 @@ document.addEventListener('webkitfullscreenchange', function () { setTimeout(fit
 // 表格视图以前是 <details>，这里原来监听 toggle 来重算高度、并在展开时
 // 暂停轮播。现在表格常驻展开、在自己的盒子里滚，没有 toggle 可听了，
 // 整个监听连同那套暂停逻辑一起删掉。
+
+// ═══════════════════════════════════════════════════════════════
+// 目标线设置弹窗
+//
+// 大屏上本来是不放配置入口的（见页脚那段注释：账号一律在服务端配）。
+// 目标线是个例外，需求方明确要在大屏上也能改 —— 它和账号不同：改目标线
+// 是每年一次的常规动作，值是四个两位数，遥控器/触摸都输得进去；而账号
+// 是一次性的，且要输密码。
+//
+// 但风险是真的：这块屏无人值守，谁路过都能碰。所以做了三件事 ——
+//   · 按钮放在标题栏最不显眼的位置，用最低的对比度
+//   · 打开弹窗即接管（manualHold），轮播和表格滚动都停，免得边改边跳
+//   · 保存前所有输入都在草稿里，点「保存」才整体提交；点外面/取消即丢弃
+// ═══════════════════════════════════════════════════════════════
+var TM = { draft: null, types: [], year: null };
+function tmEl(id) { return document.getElementById(id); }
+// esc() 只处理 & < >，够用在文本节点里，但这里要往 value="…" 里塞，
+// 引号必须一起转 —— 否则一个带引号的类型名就能把属性提前闭合
+function escA(s) { return esc(s).replace(/"/g, '&quot;'); }
+
+function tmSay(msg, kind) {
+  var m = tmEl('tmMsg');
+  m.textContent = msg || '';
+  m.className = 'modal-msg' + (kind ? ' ' + kind : '');
+}
+
+function tmOpen() {
+  manualHold();            // 开着弹窗时别翻页、别滚表格
+  renderLoopHint();
+  tmSay('读取中…');
+  tmEl('targetModal').className = 'modal-back show';
+  fetch(api('/api/targets'), { cache: 'no-store' })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      TM.types = d.types || [];
+      TM.draft = {};
+      var ys = Object.keys(d.targets || {}), i, j;
+      for (i = 0; i < ys.length; i++) {
+        var y = ys[i];
+        TM.draft[y] = {};
+        var ks = Object.keys(d.targets[y]);
+        for (j = 0; j < ks.length; j++) {
+          var v = d.targets[y][ks[j]];
+          var arr = (Object.prototype.toString.call(v) === '[object Array]') ? v : [v, v, v, v];
+          TM.draft[y][ks[j]] = arr.map(function (x) {
+            return (x === null || x === undefined) ? '' : String(x);
+          });
+        }
+      }
+      var cur = d.currentYear;
+      if (!TM.draft[cur]) TM.draft[cur] = {};
+      TM.year = cur;
+      tmRenderYears(); tmRenderRows(); tmSay('');
+    })
+    .catch(function (err) { tmSay('读不到目标线：' + err.message, 'err'); });
+}
+
+function tmClose() {
+  tmEl('targetModal').className = 'modal-back';
+  // 关掉之后再给一轮接管时间：人往往是「关了弹窗、抬头再看一眼那张卡」，
+  // 这时候立刻翻页最招人烦
+  manualHold();
+  renderLoopHint();
+}
+
+function tmRenderYears() {
+  var sel = tmEl('tmYear');
+  var years = Object.keys(TM.draft).sort();
+  var html = '', i;
+  for (i = 0; i < years.length; i++) {
+    html += '<option value="' + years[i] + '"' + (years[i] === TM.year ? ' selected' : '') +
+            '>' + years[i] + ' 年</option>';
+  }
+  sel.innerHTML = html;
+  var thisYear = String(new Date().getFullYear());
+  tmEl('tmYearNote').textContent =
+    TM.year === thisYear ? '（今年，屏上现在用的就是这一档）'
+    : TM.year > thisYear ? '（未来年份，到那年 1 月 1 日自动启用）'
+    : '（往年）';
+}
+
+function tmRenderRows() {
+  var rows = TM.draft[TM.year] || {};
+  var html = '', i, q;
+  for (i = 0; i < TM.types.length; i++) {
+    var t = TM.types[i];
+    var v = rows[t.key] || ['', '', '', ''];
+    // 指标名跟卡片上写的一致，否则「99.7 是哪个指标的线」得靠猜
+    var metric = t.key.indexOf('流水') >= 0 ? '一次直通率' : '一次合格率';
+    html += '<tr><td class="rowlab">' + esc(t.label) +
+            '<span class="metric">' + metric + '</span></td>';
+    for (q = 0; q < 4; q++) {
+      html += '<td><input type="number" step="0.1" min="0" max="100" ' +
+              'data-k="' + escA(t.key) + '" data-q="' + q + '" ' +
+              'value="' + (v[q] == null ? '' : escA(String(v[q]))) + '" ' +
+              'aria-label="' + escA(t.label) + ' 第 ' + (q + 1) + ' 季度"></td>';
+    }
+    html += '</tr>';
+  }
+  tmEl('tmRows').innerHTML = html;
+}
+
+function tmSave() {
+  // 发全量：所有年份 × 所有类型，没填的写 null。接口是整体替换不是逐条
+  // 合并 —— 只发改动的那条，没发的会退回代码里的出厂默认值
+  var payload = {}, ys = Object.keys(TM.draft), i, j;
+  for (i = 0; i < ys.length; i++) {
+    var y = ys[i];
+    payload[y] = {};
+    for (j = 0; j < TM.types.length; j++) {
+      var k = TM.types[j].key;
+      var arr = (TM.draft[y] && TM.draft[y][k]) || ['', '', '', ''];
+      payload[y][k] = arr.map(function (s) {
+        return (s === '' || s === null || s === undefined) ? null : Number(s);
+      });
+    }
+  }
+  var btn = tmEl('tmSave');
+  btn.disabled = true;
+  tmSay('保存中…');
+  fetch(api('/api/targets'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targets: payload })
+  })
+    .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, b: b }; }); })
+    .then(function (x) {
+      if (!x.ok) throw new Error(x.b.error || '保存失败');
+      tmClose();
+      load();                 // 立刻按新目标线重画
+    })
+    .catch(function (err) { tmSay(err.message, 'err'); })
+    .then(function () { btn.disabled = false; });
+}
+
+(function tmInit() {
+  var back = tmEl('targetModal');
+  if (!back) return;
+
+  // 按钮由 JS 插入，而且导出静态快照时不插。
+  //
+  // 光靠「JS 插入」挡不住：export-static.js 是先用无头浏览器渲染、再从
+  // 渲染结果里剥掉 <script>，所以运行时插进去的按钮照样会被烤进快照 ——
+  // 那就成了一个按不动的死按钮。所以导出时显式带上 ?static=1，
+  // 这里认这个标记跳过所有交互控件。
+  var isStatic = /[?&]static=1\b/.test(location.search);
+  var tools = tmEl('hdTools');
+  if (tools && !isStatic) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn'; b.id = 'btnTargets';
+    b.textContent = '目标线设置';
+    b.addEventListener('click', tmOpen);
+    tools.appendChild(b);
+  }
+
+  tmEl('tmCancel').addEventListener('click', tmClose);
+  tmEl('tmSave').addEventListener('click', tmSave);
+  tmEl('tmYear').addEventListener('change', function (ev) {
+    TM.year = ev.target.value; tmRenderYears(); tmRenderRows(); tmSay('');
+  });
+  tmEl('tmAddYear').addEventListener('click', function () {
+    // 从已有的最大年份往后加，不是固定「明年」——已经配到 2028 就给 2029
+    var years = Object.keys(TM.draft).sort();
+    var last = Number(years[years.length - 1] || 0);
+    var base = Math.max(new Date().getFullYear(), last);
+    var y = String(base + 1);
+    if (!TM.draft[y]) TM.draft[y] = {};
+    TM.year = y;
+    tmRenderYears(); tmRenderRows();
+    tmSay('新的一年默认是空的，填完保存。留空的季度屏上会显示「目标未设」。');
+  });
+  // 每敲一下就存进草稿：切年份时当前页的输入会被整体重建，不随手存就丢了
+  tmEl('tmRows').addEventListener('input', function (ev) {
+    var el = ev.target;
+    if (!el || !el.getAttribute || !el.getAttribute('data-k')) return;
+    var k = el.getAttribute('data-k'), q = Number(el.getAttribute('data-q'));
+    if (!TM.draft[TM.year]) TM.draft[TM.year] = {};
+    if (!TM.draft[TM.year][k]) TM.draft[TM.year][k] = ['', '', '', ''];
+    TM.draft[TM.year][k][q] = String(el.value).replace(/^\s+|\s+$/g, '');
+    var n = Number(el.value);
+    var bad = el.value !== '' && (!isFinite(n) || n <= 0 || n > 100);
+    el.className = bad ? 'bad' : '';
+    tmSay('');
+  });
+  // 点弹窗外的暗色区域关掉。触摸屏上没有 Esc，这是唯一的「点错了退出去」的路
+  back.addEventListener('click', function (ev) { if (ev.target === back) tmClose(); });
+  // 弹窗开着时，操作它不该被当成「想翻页」，但确实要一直保持接管状态
+  back.addEventListener('touchstart', function () { manualHold(); }, { passive: true });
+})();
 
 // ═══════════════════════════════════════════════════════════════
 // 启动
