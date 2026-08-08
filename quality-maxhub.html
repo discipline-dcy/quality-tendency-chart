@@ -1008,8 +1008,8 @@ var GROUP_SUB_ALL = '';     // 并排页的副标题，切回来时要还原
 //
 // 为什么是「空闲后恢复」而不是「按一下暂停、再按一下继续」：车间没人会
 // 记得按第二下。看完就走开是常态，屏必须自己回到无人值守的样子。
-var MANUAL_RESUME_MS = 60000;
-// 现场调：网址后面加 ?manual=30 就是 30 秒后恢复，允许 10~600，越界当没写
+var MANUAL_RESUME_MS = 30000;
+// 现场调：网址后面加 ?manual=60 就是 60 秒后恢复，允许 10~600，越界当没写
 (function () {
   var m = /[?&]manual=([^&]*)/.exec(location.search);
   if (!m) return;
