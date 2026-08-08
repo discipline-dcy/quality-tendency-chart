@@ -73,9 +73,13 @@
   /* 设计基准 1920×1080，1rem = 16 设计像素。
      不用 vh —— 安卓地址栏会让 100vh 算错，而且滚动时还会变 */
   .board {
-    width: 120rem;
+    /* 宽度撑满而不是写死 120rem：根字号按 min(宽,高) 缩放，屏幕比 16:9 宽
+       时缩放由高度决定，写死 120rem 就只有 120×(vh/1080) 那么宽，左右空出
+       一截。改成 100% 让容器吃满视口，字号仍按 min 算，所以还是一屏装得下，
+       只是横向铺开——卡片和图表变宽，字不拉伸变形。
+       SVG 都是按 parentNode.clientWidth 实测后重算 viewBox 的，跟着就宽了 */
+    width: 100%;
     min-height: 67.5rem;
-    margin: 0 auto;
     padding: 1.75rem;
   }
 
@@ -148,8 +152,11 @@
 
   /* ── 下半：小倍数 ─────────────────────────────────────── */
   .groups { margin-top: 1.25rem; }
-  .sparks { display: flex; flex-wrap: wrap; }
-  .spark-card { min-width: 0; margin-right: .9rem; }
+  .sparks { display: flex; flex-wrap: wrap; height: 100%; }
+  /* 卡片也竖向 flex：图吃掉标题和状态行以外的全部高度，和放大页同一套办法。
+     两页都把舞台填满，翻页时视觉重心才不会上下跳 */
+  .spark-card { min-width: 0; margin-right: .9rem; display: flex; flex-direction: column; height: 100%; }
+  .spark-card .plot, .spark-card .spark-none { flex: 1 1 auto; min-height: 0; }
   .spark-head { display: flex; align-items: baseline; min-width: 0; margin-bottom: .3rem; }
   .spark-name {
     font-size: 1.15rem; font-weight: 500;
@@ -162,18 +169,80 @@
   }
   .spark-status { font-size: .95rem; color: var(--ink-2); margin-top: .3rem; }
   .spark-status .ic { margin-right: .35em; }
+  /* 各类型的目标线不同，必须逐卡写出来 —— 三条虚线高度不一，
+     不写清楚会被当成数据在动 */
+  .spark-target { font-size: .85rem; color: var(--ink-muted); margin-top: .15rem; }
 
-  /* ── 表格视图：每张图的等价物，不靠颜色传信息 ─────────── */
-  .table-view { margin-top: .6rem; }
-  .table-view summary {
-    font-size: 1rem; color: var(--ink-muted); cursor: pointer;
-    list-style: none; display: block;
-    /* 触摸目标：手指按不准 15px 的一行字 */
-    min-height: 3rem; line-height: 3rem;
+  /* 样本量撑不起趋势的类型：不画图，占位写明为什么。
+     高度由 JS 按迷你图算出来写死（和 .plot 一样的理由：老 WebView 上
+     百分比/auto 高度算不出来），这里只管排版 */
+  .spark-none {
+    display: flex; align-items: center;
+    font-size: .9rem; color: var(--ink-muted); line-height: 1.4;
+    border-top: 1px solid var(--hairline);
+    border-bottom: 1px solid var(--hairline);
   }
-  .table-view summary::-webkit-details-marker { display: none; }
-  .table-view summary::before { content: "\25B8\00A0"; }
-  .table-view[open] summary::before { content: "\25BE\00A0"; }
+
+  /* ── 轮播：下半区放大显示单个生产类型 ──────────────────────
+     上半的全厂 KPI 和趋势图常驻不动 —— 班组长抬头一眼要看到的是
+     「现在够不够」，那个答案不能等轮播转到某一页才出现 */
+  /* 舞台高度写死：并排页和放大页内容高度不同，不固定的话每翻一页
+     fit() 都会按新的总高重算根字号，整块看板的字会跟着跳一下 ——
+     五米外看就是屏幕在抽搐 */
+  /* 表格常驻之后，逐日的精确数值由表格负责，图这边只承担「形状」这件事，
+     所以舞台从 16rem 收回来一些，把高度让给表格。整块看板的总高是有预算的：
+     超出一屏 fit() 就整体缩小，缩小是等比的 —— 高度超支会连带把宽度也浪费掉，
+     两边留出大片黑边，五米外反而更难读 */
+  .stage { height: 11.5rem; }
+  /* 竖向 flex：图占掉标题和状态行之外的全部高度，具体多少像素由 JS 量出来
+     再折算成 viewBox 比例（见 drawFocus）。写死高度的话，根字号一变就溢出，
+     图会压到下面那行状态字上 —— 这个 bug 真出过 */
+  .focus { display: none; height: 100%; }
+  .focus.on { display: flex; flex-direction: column; }
+  .focus .plot, .focus-none { flex: 1 1 auto; min-height: 0; }
+  .focus-head { display: flex; align-items: baseline; margin-bottom: .35rem; flex: none; }
+  .focus-meta { flex: none; }
+  .focus-name { font-size: 1.8rem; font-weight: 600; }
+  .focus-rate {
+    margin-left: auto; font-size: 2.8rem; font-weight: 600; line-height: 1;
+    font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+  }
+  .focus-meta { font-size: 1.2rem; color: var(--ink-2); margin-top: .5rem; }
+  .focus-meta .ic { margin-right: .35em; }
+  /* 样本撑不起趋势的类型，放大页给的是这段话而不是图 */
+  .focus-none {
+    display: flex; align-items: center;
+    font-size: 1.3rem; color: var(--ink-muted); line-height: 1.6;
+    padding: 0 2rem;
+    border-top: 1px solid var(--hairline);
+    border-bottom: 1px solid var(--hairline);
+    margin-bottom: .5rem;
+  }
+
+  /* 页码圆点：让人知道「还有几页」「等多久轮回来」。
+     没有这个，轮播在观众眼里就是屏幕自己在乱跳 */
+  .dots { margin-left: auto; font-size: 1rem; color: var(--ink-muted); letter-spacing: .35em; }
+  .dots .on { color: var(--ink); }
+  .panel-title { display: flex; align-items: baseline; }
+
+  /* ── 表格视图：每张图的等价物，不靠颜色传信息 ───────────
+     大屏上**常驻展开**，不做折叠。折叠是给有鼠标的人准备的交互，
+     而车间这块屏没有鼠标也没人操作 —— 藏起来的值等于不存在。
+     代价是内容比一屏高，所以放进一个定高的盒子里自动上下滚。 */
+  .table-view { margin-top: .6rem; }
+  .tv-title { font-size: 1rem; color: var(--ink-muted); margin-bottom: .3rem; display: flex; }
+  .tv-hint { margin-left: auto; }
+  /* 定高 + 自己滚。高度写死是为了让整块看板的总高可预测，
+     fit() 才算得准 —— 内容有多高都不会把看板顶出一屏 */
+  .tv-box { height: 11rem; overflow: hidden; position: relative; }
+  /* 上下两端各压一道渐隐，明示「上面/下面还有内容」。
+     没有这个，滚到一半的表格看起来就像被裁掉了 */
+  .tv-box::before, .tv-box::after {
+    content: ""; position: absolute; left: 0; right: 0; height: 1.6rem;
+    pointer-events: none; z-index: 1;
+  }
+  .tv-box::before { top: 0;    background: linear-gradient(to bottom, var(--surface), rgba(26,26,25,0)); }
+  .tv-box::after  { bottom: 0; background: linear-gradient(to top,    var(--surface), rgba(26,26,25,0)); }
   .scroller { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table { border-collapse: collapse; margin-top: .5rem; font-size: 1rem; }
   th, td {
@@ -237,12 +306,17 @@
   </div>
 
   <div class="card groups">
-    <h2 class="panel-title">各产品良品率<span class="sub" id="groupSub">按检验量取前几位 · 共用同一纵轴，形状可直接互比</span></h2>
-    <div class="sparks" id="sparks"></div>
-    <details class="table-view">
-      <summary>表格视图（全部数值）</summary>
-      <div class="scroller" id="tableView"></div>
-    </details>
+    <h2 class="panel-title"><span id="groupTitle">各生产类型合格率</span><span class="sub" id="groupSub">共用同一纵轴，形状可直接互比</span><span class="dots" id="loopDots"></span></h2>
+    <div class="stage" id="stage">
+      <div class="sparks" id="sparks"></div>
+      <div class="focus" id="focus"></div>
+    </div>
+    <div class="table-view">
+      <div class="tv-title"><span>表格视图（全部数值）</span><span class="tv-hint" id="tvHint"></span></div>
+      <div class="tv-box" id="tvBox">
+        <div class="scroller" id="tableView"></div>
+      </div>
+    </div>
   </div>
 
   <div class="ft">
@@ -271,35 +345,86 @@
 var DEMO = {
   updatedAt: new Date().toISOString(),
   range: '示例数据（未连接 OA）',
-  target: 98.5,
-  minSample: 200,
+  target: 96.5,
+  targetIsKpi: false,   // 全厂合计那条是推算的参考线，考核表里没有这一档
+  minSample: 50,
+  rateFloor: 90,        // 纵轴最低画到 90%；低于此值的日期标红
+  // 下面这些数字是互相对得上的：series 按日合计 = 三个 types 之和，
+  // summary 又是 series 算出来的。和电脑版 quality.html 是同一份
   summary: {
-    rate: 97.9, defect: 86, output: 4185, periodRate: 98.2,
-    rateDelta: -0.5, defectDelta: 12, deltaBase: '前一有数据日', latestDate: '2026-07-29'
+    rate: 97, defect: 10, output: 328, periodRate: 95.9,
+    rateDelta: 5.1, defectDelta: -6, deltaBase: '前一有数据日', latestDate: '2026-08-03'
   },
   series: [
-    { t: '07-16', date: '2026-07-16', output: 3980, defect:  52, rate: 98.7 },
-    { t: '07-17', date: '2026-07-17', output: 4120, defect:  49, rate: 98.8 },
-    { t: '07-18', date: '2026-07-18', output: 4010, defect:  56, rate: 98.6 },
-    { t: '07-19', date: '2026-07-19', output:    0, defect:   0, rate: null },  // 周末无检验
-    { t: '07-20', date: '2026-07-20', output: 3890, defect:  78, rate: 98.0 },
-    { t: '07-21', date: '2026-07-21', output: 4230, defect:  62, rate: 98.5 },
-    { t: '07-22', date: '2026-07-22', output:  150, defect:   5, rate: 96.7 },  // 样本不足
-    { t: '07-23', date: '2026-07-23', output: 4050, defect:  71, rate: 98.2 },
-    { t: '07-24', date: '2026-07-24', output: 3960, defect:  95, rate: 97.6 },
-    { t: '07-25', date: '2026-07-25', output: 4180, defect: 118, rate: 97.2 },
-    { t: '07-26', date: '2026-07-26', output:    0, defect:   0, rate: null },
-    { t: '07-27', date: '2026-07-27', output: 4090, defect: 133, rate: 96.7 },  // 低谷
-    { t: '07-28', date: '2026-07-28', output: 4150, defect: 104, rate: 97.5 },
-    { t: '07-29', date: '2026-07-29', output: 4185, defect:  86, rate: 97.9 }
+    { t: '07-22', date: '2026-07-22', output:  346, defect:  12, rate: 96.5 },
+    { t: '07-23', date: '2026-07-23', output:  403, defect:  14, rate: 96.5 },
+    { t: '07-24', date: '2026-07-24', output:  444, defect:  10, rate: 97.7 },
+    { t: '07-25', date: '2026-07-25', output:  256, defect:   8, rate: 96.9 },
+    { t: '07-26', date: '2026-07-26', output:    0, defect:   0, rate: null },  // 周末无检验
+    { t: '07-27', date: '2026-07-27', output:  414, defect:  18, rate: 95.7 },
+    { t: '07-28', date: '2026-07-28', output:  544, defect:  17, rate: 96.9 },
+    { t: '07-29', date: '2026-07-29', output:  501, defect:  27, rate: 94.6 },
+    { t: '07-30', date: '2026-07-30', output:  351, defect:  18, rate: 94.9 },
+    { t: '07-31', date: '2026-07-31', output:  351, defect:  21, rate: 94   },
+    { t: '08-01', date: '2026-08-01', output:  198, defect:  16, rate: 91.9 },  // 低谷
+    { t: '08-02', date: '2026-08-02', output:    0, defect:   0, rate: null },
+    { t: '08-03', date: '2026-08-03', output:  328, defect:  10, rate: 97   },
+    { t: '08-04', date: '2026-08-04', output:    0, defect:   0, rate: null }
   ],
+  // 主视觉：按检验类型。清分机日均只有个位数，是 sparse（样本撑不起趋势）
+  // 那一档的样板 —— 它的 08-03 是「检 2 件坏 2 件 → 0%」
+  //
+  // ⚠ 四张卡不是同一个指标，metricLabel 必须跟着数一起给：
+  //   流水 = 一次直通率（三环节相乘，天然低一截）、组件 = 抽检一次合格率、
+  //   改型和清分机 = 一次合格率。四项在品质部考核表里全是「一次」口径。
+  //   目标线是季度 KPI，这里取 Q3 那一档
+  types: [
+    { name: '流水生产', qty: 3516, defect: 154, rate: 82.4, yieldRate: 95.6,
+      metric: 'fpy', metricLabel: '一次直通率', target: 90, mode: 'daily',
+      activeDays: 12, medianQty: 274, noDenomDefect: 0, lowSample: false,
+      spark:     [ 90.2, 83.6, 87.5, 85.3, null, 43.8, 73.7, 85.4, 75.4, 78.0, 91.2, null, 84.1, null],
+      sparkQty:  [  216,  304,  316,  226,    0,  186,  387,  344,  186,  257,  162,    0,  274,    0],
+      // 07-30 那天流水共 186 件，但电检只做了 15 件 —— 直通率被拉到 43.8%
+      sparkThin: [false,false,false,false,false, true,false,false, true,false, true,false,false,false] },
+    { name: '组件生产', qty: 3066, defect: 1, qualified: 3065, rate: 99.97, decimals: 2,
+      metric: 'pass', metricLabel: '一次合格率', target: 99.7, mode: 'daily',
+      source: '组件抽检巡检单', activeDays: 13, medianQty: 190, noDenomDefect: 0, lowSample: false,
+      spark:     [  100,  100,  100,  100,99.51,  100,  100,  100, null,  100,  100,  100,  100,  100],
+      sparkQty:  [  114,  127,  180,  191,  206,  194,  302,  143,    0,  286,  186,  190,  321,  626],
+      sparkThin: [false,false,false,false,false,false,false,false,false,false,false,false,false,false] },
+    { name: '成品改型', qty: 918, defect: 16, rate: 98.3,
+      metric: 'yield', metricLabel: '一次合格率', target: 96, mode: 'daily',
+      activeDays: 11, medianQty: 93, noDenomDefect: 0, lowSample: false,
+      spark:     [ 99.2, 97.5, 99.2, 96.7, null, 96.8, 99.2, 94.4, 99.3, 94.6, 97.2, null, 98.1, null],
+      sparkQty:  [  130,   79,  128,   30,    0,   93,  127,  125,  135,   74,   36,    0,   52,    0],
+      sparkThin: [false, true,false, true,false,false,false,false,false, true, true,false,false,false] },
+    { name: '硬币清分机', qty: 136, defect: 15, rate: 89,
+      metric: 'yield', metricLabel: '一次合格率', target: 92, mode: 'sparse',
+      activeDays: 7, medianQty: 25, noDenomDefect: 0, lowSample: false,
+      spark:     [ null,  100, null, null, null, null, 96.7, 87.5, 83.3,   90, null, null,    0, null],
+      sparkQty:  [    0,   20,    0,    0,    0,    0,   30,   32,   30,   20,    0,    0,    2,    0],
+      sparkThin: [false, true,false,false,false,false, true, true, true, true,false,false, true,false] }
+  ],
+  // 流水三环节，表格视图用。电检是瓶颈：合格率最低，检验量还不到另两个环节的一半
+  flowStages: [
+    { id: 'electrical', label: '电检',   qty:  607, defect: 81, rate: 86.7 },
+    { id: 'assembly',   label: '装配检', qty: 1515, defect: 39, rate: 97.4 },
+    { id: 'line',       label: '流水检', qty: 1394, defect: 34, rate: 97.6 }
+  ],
+  flowFpy: 82.4,
   groups: [
-    { name: 'A-1024 · 主控板',   spark: [99.2,99.0,98.8,null,98.9,99.1,98.7,99.1,99.0,98.9,null,98.8,99.0,99.1] },
-    { name: 'A-2087 · 驱动模块', spark: [98.9,98.6,98.7,null,98.4,98.6,98.5,98.6,98.5,98.4,null,98.3,98.5,98.6] },
-    { name: 'B-3310 · 外壳组件', spark: [98.7,98.8,98.5,null,97.9,97.6,96.8,96.9,96.5,96.2,null,95.8,96.1,96.4] },
-    { name: 'B-4152 · 传感器',   spark: [99.0,98.8,98.9,null,98.6,98.5,98.4,98.6,98.5,98.6,null,98.4,98.5,98.6] },
-    { name: 'C-5006 · 线束',     spark: [99.4,99.3,99.5,null,99.2,99.4,99.3,99.4,99.3,99.4,null,99.2,99.3,99.4] },
-    { name: 'C-6721 · 装配件',   spark: [98.2,98.1,97.9,null,97.6,97.4,97.2,97.1,97.0,97.0,null,96.9,97.0,97.0] }
+    { name: 'BCS-160A',    qty: 1420, defect: 61, rate: 95.7,
+      spark: [95.2,96.0,97.1,96.4,null,95.1,96.3,95.0,93.8,94.5,91.2,null,97.0,null] },
+    { name: 'HCS-3300',    qty: 986,  defect: 34, rate: 96.6,
+      spark: [96.9,96.5,97.4,97.2,null,95.8,96.4,96.1,94.9,95.6,93.1,null,97.8,null] },
+    { name: '点钞机半制品', qty: 604,  defect: 29, rate: 95.2,
+      spark: [94.1,95.3,96.0,95.5,null,94.2,95.1,94.6,92.8,93.4,89.9,null,96.2,null] },
+    { name: 'VS-75(M165)', qty: 512,  defect: 18, rate: 96.5,
+      spark: [97.2,96.8,97.0,96.1,null,96.4,96.9,95.8,96.2,95.9,94.7,null,97.5,null] },
+    { name: 'BC-30',       qty: 348,  defect: 12, rate: 96.6,
+      spark: [96.5,97.0,96.8,null,null,96.2,97.1,96.0,96.4,95.7,null,null,97.2,null] },
+    { name: 'HCS-2100',    qty: 266,  defect: 7,  rate: 97.4,
+      spark: [97.8,97.2,98.0,97.5,null,96.9,97.6,97.1,96.8,97.0,null,null,98.1,null] }
   ],
   crossCheck: null,
   counts: null
@@ -345,6 +470,28 @@ function resolveServer() {
 var SERVER = resolveServer();
 function api(p) { return SERVER + p; }
 
+// ═══════════════════════════════════════════════════════════════
+// 轮播开关
+//
+// 下半区默认轮播：先并排给一页（谁最低一眼看得出），再逐个类型放大。
+// 上半的全厂 KPI 和趋势图**不参与轮播**，始终在屏上 —— 班组长抬头
+// 三秒要拿到的第一个答案是「现在够不够」，那个答案不能等轮到某一页。
+//
+// 关掉轮播：网址后面加 ?loop=0，退回三张小图并排的静态版面。
+// 停留时长也能改：?loop=20 就是 20 秒一页。
+// ═══════════════════════════════════════════════════════════════
+var LOOP_MS = 15000;
+var LOOP_ON = true;
+(function () {
+  var m = /[?&]loop=([^&]*)/.exec(location.search);
+  if (!m) return;
+  var v = decodeURIComponent(m[1]).trim();
+  if (v === '0' || v === 'off' || v === 'false') { LOOP_ON = false; return; }
+  var n = parseFloat(v);
+  // 低于 5 秒读不完一页，高于 120 秒就不像轮播了 —— 越界的值当没写
+  if (isFinite(n) && n >= 5 && n <= 120) LOOP_MS = n * 1000;
+})();
+
 function loadQuality() {
   return fetch(api('/api/quality'), { cache: 'no-store' }).then(function (res) {
     if (res.ok) return res.json();
@@ -381,12 +528,18 @@ function gradeOf(rate, target) {
 
 // 纵轴范围：良品率挤在 96–99 之间，从 0 起画会是一条直线。
 // 折线图允许截断纵轴（柱状图不允许 —— 柱长就是数值）
-function rateScale(values, target) {
+//
+// floor：纵轴最低必须画到这个刻度（默认 90%），这样「离 90 还有多远」
+// 在图上是同一把尺子。数据真跌破 floor 时继续往下让 —— 否则点会画到
+// 坐标区外面，标红的日期反而指向一个看不见的点
+function rateScale(values, target, floor) {
   var nums = [], i;
   for (i = 0; i < values.length; i++) if (typeof values[i] === 'number') nums.push(values[i]);
   if (!nums.length) nums.push(target);
   nums.push(target);
-  return { lo: Math.floor(Math.min.apply(null, nums) - 0.5), hi: 100 };
+  var lo = Math.floor(Math.min.apply(null, nums) - 0.5);
+  if (typeof floor === 'number') lo = Math.min(lo, floor);
+  return { lo: Math.max(0, lo), hi: 100 };   // 良品率没有负数，留一手防出现 0% 的日子把轴拉到 -1
 }
 
 // 时间和千分位一律手写。toLocaleTimeString('zh-CN') 依赖设备 ICU，
@@ -438,12 +591,14 @@ function renderTrend(data) {
 
   var rates = [];
   for (i = 0; i < pts.length; i++) rates.push(pts[i].rate);
-  var sc = rateScale(rates, data.target), lo = sc.lo, hi = sc.hi;
+  var floor = typeof data.rateFloor === 'number' ? data.rateFloor : 90;
+  var sc = rateScale(rates, data.target, floor), lo = sc.lo, hi = sc.hi;
 
   var x = function (i) { return padL + (pts.length === 1 ? plotW / 2 : i * plotW / (pts.length - 1)); };
   var y = function (v) { return padT + plotH - (v - lo) / (hi - lo) * plotH; };
   var hasVal = function (i) { return typeof pts[i].rate === 'number'; };
   var weakAt = function (i) { return pts[i].output > 0 && pts[i].output < data.minSample; };
+  var belowFloor = function (i) { return hasVal(i) && pts[i].rate < floor; };
 
   // 网格：发丝实线，比数据弱一档（虚线会被读成「阈值」）
   var gridStep = (hi - lo) > 8 ? 2 : 1;
@@ -454,12 +609,14 @@ function renderTrend(data) {
       fill: 'var(--ink-muted)', 'font-size': 20 }, v + '%'));
   }
 
-  // 目标线：这是真正的阈值，虚线在这里是正当用法。
-  // 标签放左端线上方 —— 右侧留给末点数值，挤一起会叠字
+  // 这条线是全厂合计的**参考线**，不是 KPI —— 考核表的质量类只有四项，
+  // 没有「全厂合计」这一档，96.5 是推算出来的。五米外看，「目标」两个字
+  // 会让人以为全厂有考核线。真正的目标线在下面四张卡上。
   svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: y(data.target), y2: y(data.target),
     stroke: 'var(--warning)', 'stroke-width': 2, 'stroke-dasharray': '8 6', 'stroke-linecap': 'round' }));
   svg.appendChild(el('text', { x: padL + 6, y: y(data.target) - 11,
-    fill: 'var(--ink-2)', 'font-size': 19 }, '目标 ' + data.target + '%'));
+    fill: 'var(--ink-2)', 'font-size': 19 },
+    (data.targetIsKpi === false ? '参考 ' : '目标 ') + data.target + '%'));
 
   // 不画面积填充：纵轴是截断的，面积会把「离基线多远」说成「有多少」
 
@@ -504,19 +661,27 @@ function renderTrend(data) {
   svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: padT + plotH, y2: padT + plotH,
     stroke: 'var(--axis)', 'stroke-width': 1 }));
 
-  // 日期多的时候隔一个标一个，免得挤成一坨
+  // 日期多的时候隔一个标一个，免得挤成一坨。
+  // 未达 floor 的日子是例外，一定要标出来 —— 被隔一个跳掉就等于没有提示
   var every = pts.length > 16 ? 2 : 1;
   for (i = 0; i < pts.length; i++) {
-    if (i % every !== 0 && i !== pts.length - 1) continue;
+    if (i % every !== 0 && i !== pts.length - 1 && !belowFloor(i)) continue;
+    var bad = belowFloor(i);
     svg.appendChild(el('text', { x: x(i), y: padT + plotH + 31, 'text-anchor': 'middle',
-      fill: 'var(--ink-muted)', 'font-size': 20,
-      opacity: hasVal(i) ? (weakAt(i) ? 0.55 : 1) : 0.4 }, pts[i].t));
+      fill: bad ? 'var(--critical)' : 'var(--ink-muted)',
+      'font-size': 20, 'font-weight': bad ? 700 : 400,
+      // 样本不足仍旧压暗，但压得比常规轻：这天既「不达标」又「不可靠」，
+      // 两个信息都要留住，不能让 0.55 把红色弱化到看不出来
+      opacity: bad ? (weakAt(i) ? 0.7 : 1) : (hasVal(i) ? (weakAt(i) ? 0.55 : 1) : 0.4)
+    }, pts[i].t));
   }
 
-  // 纵轴不从 0 起必须说明，否则会被读成「良品率快掉到底了」
+  // 纵轴不从 0 起必须说明，否则会被读成「良品率快掉到底了」。
+  // 标红是新增的约定，同样得在图上讲清楚，不能让人猜
   svg.appendChild(el('text', { x: padL, y: 17, fill: 'var(--ink-muted)', 'font-size': 17 },
     '纵轴 ' + lo + '–' + hi + '%（非零起点）· 空心点＝当日检验数不足 ' +
-    data.minSample + ' 件，比率仅供参考 · 断开＝当日无检验记录'));
+    data.minSample + ' 件，比率仅供参考 · 断开＝当日无检验记录 · 日期标红＝当日良品率低于 ' +
+    floor + '%'));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -585,10 +750,17 @@ function renderDefects(data) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 小倍数：每个产品一张迷你折线
+// 小倍数：每个生产类型一张迷你折线
 //
-// 所有小图共用同一个纵轴范围。各画各的范围会让所有线看起来一样陡，
-// 那是在骗人
+// 分组维度是「检验类型」（流水生产 / 成品改型 / 清分机），不是产品代码。
+// 理由：两个接口都有这个字段，分子分母能对齐；而且它回答的正是班组长
+// 站在屏幕前真正要问的那句「哪条线拖的后腿」。产品维度退到表格视图。
+//
+// 所有小图共用同一个纵轴范围 —— 各画各的范围会让所有线看起来一样陡，
+// 那是在骗人。但共用纵轴有个前提：参与定标的点得可信。实测清分机有过
+// 「当天检 2 件、坏 2 件 → 0%」的点，让它定标会把另两条线压成平线。所以：
+//   · 定标只用样本量达标的点
+//   · 整个类型都撑不起趋势的（mode 为 sparse），干脆不画图
 // ═══════════════════════════════════════════════════════════════
 var SPARK_SLOTS = [];
 
@@ -597,26 +769,23 @@ function buildSparks(data) {
   box.textContent = '';
   SPARK_SLOTS = [];
 
-  var groups = data.groups || [], i;
-  if (!groups.length) {
+  var types = data.types || [], i;
+  if (!types.length) {
     box.innerHTML = '<div class="spark-status">区间内没有可分组的检验数据</div>';
     return;
   }
 
-  // 列数取组数（后端默认 6）。一行放不下就换行，靠 calc 分宽度 ——
-  // 不能用 flex gap，那是 Chromium 84
-  var perRow = Math.min(groups.length, 6);
+  // 一行放下全部类型。类型是有限的几个，不像产品代码会长出十几个。
+  // 靠 calc 分宽度，不能用 flex gap —— 那是 Chromium 84
+  var perRow = Math.min(types.length, 4);
   var wCalc = 'calc((100% - ' + (perRow - 1) * 0.9 + 'rem) / ' + perRow + ')';
 
-  for (i = 0; i < groups.length; i++) {
-    var g = groups[i];
-    var vals = [], j;
-    for (j = 0; j < g.spark.length; j++) if (typeof g.spark[j] === 'number') vals.push(g.spark[j]);
-
-    // 大数字用整个区间的良品率（后端给的 g.rate）—— 面板标题写的是多少天，
-    // 数字就得是多少天的。取最后一天会被小样本带偏
-    var cur = typeof g.rate === 'number' ? g.rate : (vals.length ? vals[vals.length - 1] : null);
-    var grade = cur === null ? null : GRADE[gradeOf(cur, data.target)];
+  for (i = 0; i < types.length; i++) {
+    var t = types[i];
+    var target = typeof t.target === 'number' ? t.target : data.target;
+    // 大数字用整个区间的良品率 —— 面板标题写的是多少天，数字就得是多少天的
+    var cur = typeof t.rate === 'number' ? t.rate : null;
+    var grade = cur === null ? null : GRADE[gradeOf(cur, target)];
 
     var card = document.createElement('div');
     card.className = 'spark-card';
@@ -627,16 +796,33 @@ function buildSparks(data) {
     head.className = 'spark-head';
     var nm = document.createElement('span');
     nm.className = 'spark-name';
-    nm.textContent = g.name;
+    // 指标名必须上卡。四张卡不是同一个指标 —— 流水是一次直通率、组件是抽检
+    // 一次合格率、改型和清分机是一次合格率。不标出来，五米外的读者会拿四把
+    // 不同的尺子横向比较，「82% 的流水」看着比「98% 的改型」差得多，其实不可比。
+    // 「一次」两个字是考核表的原话（first-pass），少了会被读成最终合格率
+    nm.textContent = t.metricLabel ? (t.name + ' · ' + t.metricLabel) : t.name;
     var rt = document.createElement('span');
     rt.className = 'spark-rate';
-    rt.textContent = cur === null ? '—' : cur.toFixed(1) + '%';
+    rt.textContent = cur === null ? '—' : cur.toFixed(t.decimals || 1) + '%';
     head.appendChild(nm); head.appendChild(rt);
     card.appendChild(head);
 
-    var plot = document.createElement('div');
-    plot.className = 'plot';
-    card.appendChild(plot);
+    var plot = null;
+    if (t.mode === 'sparse') {
+      // 样本撑不起趋势：写清楚为什么，不画任何几何图形。
+      // 几个点连成的线，五米外会被当成趋势读，那是无中生有
+      var none = document.createElement('div');
+      none.className = 'spark-none';
+      none.textContent = '近 ' + data.series.length + ' 天仅 ' + group(t.qty) + ' 件、'
+        + t.activeDays + ' 天有检验，日均不足 ' + data.minSample + ' 件，'
+        + '画趋势线是在把噪声当信号。逐日值见表格视图。';
+      card.appendChild(none);
+      plot = none;                       // 高度在 drawSparks 里和迷你图对齐
+    } else {
+      plot = document.createElement('div');
+      plot.className = 'plot';
+      card.appendChild(plot);
+    }
 
     var st = document.createElement('div');
     st.className = 'spark-status';
@@ -647,43 +833,93 @@ function buildSparks(data) {
       dot.textContent = grade.icon;
       var tx = document.createElement('span');
       // 检验量也写出来：光看比率不知道它建立在多少件上
-      tx.textContent = g.lowSample
-        ? grade.text + '（仅 ' + g.qty + ' 件，样本不足）'
-        : grade.text + (typeof g.qty === 'number' ? ' · ' + group(g.qty) + ' 件' : '');
+      tx.textContent = t.lowSample
+        ? grade.text + '（仅 ' + t.qty + ' 件，样本不足）'
+        : grade.text + (typeof t.qty === 'number' ? ' · ' + group(t.qty) + ' 件' : '');
       st.appendChild(dot); st.appendChild(tx);
     } else {
       st.textContent = '无数据';
     }
     card.appendChild(st);
 
+    // 各卡目标线不同，逐卡写出来 —— 否则三条虚线高度不一，会被当成数据在动
+    var tg = document.createElement('div');
+    tg.className = 'spark-target';
+    tg.textContent = '目标 ' + target + '%'
+      + (t.noDenomDefect ? ' · ' + t.noDenomDefect + ' 件不良当天无日报，未计入' : '');
+    card.appendChild(tg);
+
     box.appendChild(card);
-    SPARK_SLOTS.push({ plot: plot, g: g, cur: cur, grade: grade });
+    SPARK_SLOTS.push({ plot: plot, t: t, target: target, cur: cur, grade: grade,
+                       sparse: t.mode === 'sparse' });
   }
+}
+
+// 定标：只取画得出趋势的类型里样本量达标的点，外加每个类型自己的目标线。
+// 抽出来单独一个函数，是因为并排页和轮播放大页**必须共用同一个纵轴** ——
+// 轮播时读者是靠记忆跨页比较的，纵轴一页一变，比较就完全失效了
+// 某一天的点可不可信。服务端算好了放在 sparkThin 里 —— 流水按**环节**判：
+// 实测有「当天流水共 186 件、但电检只做了 15 件」把直通率拉到 43.8% 的日子，
+// 按当日总量判它是达标样本，那个点会被实心画出来，五米外就是一个真实的暴跌。
+// 没有 sparkThin 时退回老规则（按当日总量），离线快照和旧后端都还能用。
+function thinAt(t, k, data) {
+  if (t.sparkThin) return !!t.sparkThin[k];
+  var n = t.sparkQty ? t.sparkQty[k] : undefined;
+  return n !== undefined && n > 0 && n < data.minSample;
+}
+
+function typeScale(data) {
+  var types = data.types || [], all = [], i, j;
+  for (i = 0; i < types.length; i++) {
+    if (typeof types[i].target === 'number') all.push(types[i].target);
+    if (types[i].mode === 'sparse') continue;
+    for (j = 0; j < types[i].spark.length; j++) {
+      if (typeof types[i].spark[j] === 'number' && !thinAt(types[i], j, data)) {
+        all.push(types[i].spark[j]);
+      }
+    }
+  }
+  return rateScale(all, data.target);
 }
 
 function drawSparks(data) {
   if (!SPARK_SLOTS.length) return;
-  var all = [], i, j;
-  for (i = 0; i < data.groups.length; i++)
-    for (j = 0; j < data.groups[i].spark.length; j++) all.push(data.groups[i].spark[j]);
-  var sc = rateScale(all, data.target), lo = sc.lo, hi = sc.hi;
+  var i, j;
+  var sc = typeScale(data), lo = sc.lo, hi = sc.hi;
+
+  var W = 240, padT = 6, padB = 6;
 
   for (i = 0; i < SPARK_SLOTS.length; i++) {
-    var s = SPARK_SLOTS[i], g = s.g, sp = g.spark;
-    var W = 240, H = 56, padT = 6, padB = 6;
+    var s = SPARK_SLOTS[i];
 
+    // 不画图的卡由 flex 自己撑满，不用再算高度
+    if (s.sparse) continue;
+
+    var t = s.t, sp = t.spark;
+    // 和放大页同一套：量出 flex 分给这块的像素，反解出 viewBox 高度，
+    // 图正好填满，永远不会溢出到状态行上
+    var H = s.plot.clientHeight > 0
+      ? Math.round(s.plot.clientHeight * W / (s.plot.clientWidth || 1))
+      : 56;
+    if (H < padT + padB + 10) H = padT + padB + 10;
     s.plot.textContent = '';
     var svg = el('svg', { role: 'img', 'aria-label':
-      g.name + ' 良品率趋势，当前 ' + (s.cur === null ? '无数据' : s.cur.toFixed(1) + '%') +
-      (s.grade ? '，' + s.grade.text : '') });
+      t.name + (t.metricLabel || '一次合格率') + '趋势，区间 ' +
+      (s.cur === null ? '无数据' : s.cur.toFixed(t.decimals || 1) + '%') +
+      (s.grade ? '，' + s.grade.text : '') + '，目标 ' + s.target + '%' });
     s.plot.appendChild(svg);
     sizeSvg(svg, W, H);
 
-    var x = function (i) { return sp.length === 1 ? W / 2 : i * W / (sp.length - 1); };
-    var y = function (v) { return padT + (H - padT - padB) - (v - lo) / (hi - lo) * (H - padT - padB); };
+    var x = function (k) { return sp.length === 1 ? W / 2 : k * W / (sp.length - 1); };
+    // 定标排除了小样本点，个别点会落到轴外 —— 夹回画布内，否则画到卡片外面去
+    var y = function (v) {
+      var raw = padT + (H - padT - padB) - (v - lo) / (hi - lo) * (H - padT - padB);
+      return Math.max(padT, Math.min(H - padB, raw));
+    };
+    var weakAt = function (k) { return thinAt(t, k, data); };
 
     // 小图里也保留目标线，否则读者没有判断高低的锚点
-    svg.appendChild(el('line', { x1: 0, x2: W, y1: y(data.target), y2: y(data.target),
+    svg.appendChild(el('line', { x1: 0, x2: W, y1: y(s.target), y2: y(s.target),
       stroke: 'var(--warning)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4', opacity: 0.75 }));
 
     for (j = 1; j < sp.length; j++) {
@@ -691,21 +927,283 @@ function drawSparks(data) {
       svg.appendChild(el('path', {
         d: 'M' + x(j - 1) + ',' + y(sp[j - 1]) + ' L' + x(j) + ',' + y(sp[j]),
         fill: 'none', stroke: 'var(--series-1)', 'stroke-width': 2.5,
-        'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+        'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+        opacity: (weakAt(j) || weakAt(j - 1)) ? 0.35 : 1 }));
     }
-    if (s.cur !== null) {
-      var lastIdx = 0;
-      for (j = 0; j < sp.length; j++) if (typeof sp[j] === 'number') lastIdx = j;
-      svg.appendChild(el('circle', { cx: x(lastIdx), cy: y(s.cur), r: 4.5,
-        fill: 'var(--series-1)', stroke: 'var(--surface)', 'stroke-width': 2 }));
+
+    // 小样本点画空心，和主图一个规矩
+    for (j = 0; j < sp.length; j++) {
+      if (typeof sp[j] !== 'number' || !weakAt(j)) continue;
+      svg.appendChild(el('circle', { cx: x(j), cy: y(sp[j]), r: 3.5,
+        fill: 'var(--surface)', stroke: 'var(--series-1)', 'stroke-width': 1.5, opacity: 0.6 }));
+    }
+
+    var lastIdx = -1;
+    for (j = 0; j < sp.length; j++) if (typeof sp[j] === 'number') lastIdx = j;
+    if (lastIdx >= 0) {
+      svg.appendChild(el('circle', { cx: x(lastIdx), cy: y(sp[lastIdx]), r: 4.5,
+        fill: weakAt(lastIdx) ? 'var(--surface)' : 'var(--series-1)',
+        stroke: weakAt(lastIdx) ? 'var(--series-1)' : 'var(--surface)', 'stroke-width': 2 }));
     }
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 轮播：下半区逐页放大单个生产类型
+//
+// 页序：第 0 页是三张小图并排，之后每个类型各一页。
+//
+// 为什么保留第 0 页那张并排页：看板的头号任务是「哪条线拖的后腿」，
+// 而这个问题只有把几条线摆在一起才答得出。逐页放大能看清每条线自己的
+// 形状，却看不出谁最低 —— 两者都要，所以并排页留着当第一页。
+//
+// 上半区（全厂 KPI + 两张主图）不参与轮播：抬头三秒要拿到的第一个答案
+// 是「现在够不够」，那个不能等轮到某一页才出现。
+// ═══════════════════════════════════════════════════════════════
+var LOOP_PAGES = [];        // [{kind:'all'}, {kind:'type', i:n}, …]
+var loopIdx = 0;
+var GROUP_SUB_ALL = '';     // 并排页的副标题，切回来时要还原
+
+function buildLoopPages(data) {
+  var types = data.types || [], i;
+  LOOP_PAGES = [{ kind: 'all' }];
+  for (i = 0; i < types.length; i++) LOOP_PAGES.push({ kind: 'type', i: i });
+  // 数据刷新后类型可能增减，越界就回到第一页；否则保持在原页，
+  // 不能因为后台每 60 秒刷一次数就把轮播打回开头
+  if (loopIdx >= LOOP_PAGES.length) loopIdx = 0;
+}
+
+function renderDots() {
+  var box = document.getElementById('loopDots');
+  if (!LOOP_ON || LOOP_PAGES.length < 2) { box.textContent = ''; return; }
+  var html = '', i;
+  for (i = 0; i < LOOP_PAGES.length; i++) {
+    html += i === loopIdx ? '<span class="on">●</span>' : '<span>○</span>';
+  }
+  box.innerHTML = html;
+}
+
+// 放大页的 DOM。每翻一页重建 —— 类型不同，内容全不一样，
+// 复用节点省不下什么，反而容易漏掉上一页残留的状态
+function buildFocus(data, t) {
+  var box = document.getElementById('focus');
+  box.textContent = '';
+  var target = typeof t.target === 'number' ? t.target : data.target;
+  var grade = typeof t.rate === 'number' ? GRADE[gradeOf(t.rate, target)] : null;
+
+  var head = document.createElement('div');
+  head.className = 'focus-head';
+  var nm = document.createElement('span');
+  nm.className = 'focus-name';
+  // 放大页更要写清指标：这一页只剩一条线，没有旁边几张卡当参照，
+  // 「82.4%」单独摆在 4K 屏上，不写「直通率」会被当成良品率读
+  nm.textContent = t.metricLabel ? (t.name + ' · ' + t.metricLabel) : t.name;
+  var rt = document.createElement('span');
+  rt.className = 'focus-rate';
+  rt.textContent = typeof t.rate === 'number' ? t.rate.toFixed(t.decimals || 1) + '%' : '—';
+  head.appendChild(nm); head.appendChild(rt);
+  box.appendChild(head);
+
+  if (t.mode === 'sparse') {
+    var none = document.createElement('div');
+    none.className = 'focus-none';
+    none.textContent = '近 ' + data.series.length + ' 天仅 ' + group(t.qty) + ' 件、'
+      + t.activeDays + ' 天有检验，日均不足 ' + data.minSample + ' 件。'
+      + '这个量画不出可信的趋势，逐日值见表格视图。';
+    box.appendChild(none);
+  } else {
+    var plot = document.createElement('div');
+    plot.className = 'plot';
+    plot.id = 'focusPlot';
+    box.appendChild(plot);
+  }
+
+  var meta = document.createElement('div');
+  meta.className = 'focus-meta';
+  if (grade) {
+    // 流水放大页把三个环节的合格率摊出来。看板的头号任务是「哪条线拖后腿」，
+    // 翻到流水这一页，下一个问题立刻就是「哪个环节拖后腿」—— 实测电检最低，
+    // 而且检验量不到另两个环节的一半。不写出来，读者只能看到一个 82.4%
+    // fmt() 是表格视图那个函数里的局部变量，这里够不着 —— 就地写一遍。
+    // 直接调会抛 ReferenceError，而这一页只在轮播翻到流水时才渲染，
+    // 报错要过好几分钟才看得见
+    var stageTxt = '';
+    if (t.stages && t.stages.length) {
+      var st = [], si, sr;
+      for (si = 0; si < t.stages.length; si++) {
+        sr = t.stages[si].rate;
+        st.push(t.stages[si].label + ' ' + (typeof sr === 'number' ? sr.toFixed(1) : '—') + '%');
+      }
+      stageTxt = ' · ' + st.join(' × ');
+    }
+    meta.innerHTML = '<span class="ic" style="color:' + grade.color + '">' + grade.icon + '</span>'
+      + grade.text + ' · ' + group(t.qty) + ' 件检验 / ' + group(t.defect) + ' 件不良'
+      + ' · 目标 ' + target + '%' + stageTxt
+      + (t.source ? ' · 来源 ' + esc(t.source) : '')
+      + (t.noDenomDefect ? ' · ' + t.noDenomDefect + ' 件不良当天无日报，未计入' : '');
+  } else {
+    meta.textContent = '无数据';
+  }
+  box.appendChild(meta);
+}
+
+// 放大页的折线。纵轴和并排页完全一致（typeScale），换页时线的高低可直接比
+function drawFocus(data, t) {
+  if (t.mode === 'sparse') return;
+  var plot = document.getElementById('focusPlot');
+  if (!plot) return;
+  plot.textContent = '';
+
+  var target = typeof t.target === 'number' ? t.target : data.target;
+  var sc = typeScale(data), lo = sc.lo, hi = sc.hi;
+  var sp = t.spark, j;
+
+  // 高度不写死：量出 flex 分给这块的实际像素，再折算成 viewBox 高度。
+  // sizeSvg 是按 宽度×(vbH/vbW) 定高的，所以反过来解出 vbH，
+  // 画出来的图就正好填满可用空间，一个像素都不会溢出到状态行上
+  var W = 1200, padL = 78, padR = 104;
+  var availPx = plot.clientHeight || 0;
+  var wPx = plot.clientWidth || 1;
+  var H = availPx > 0 ? Math.round(availPx * W / wPx) : 110;
+  // 太扁就放不下日期轴了，那时候宁可不标日期 —— 上面那张主图已经有完整日期轴
+  var showDays = H >= 78;
+  var padT = 12, padB = showDays ? 30 : 10;
+  if (H < padT + padB + 20) H = padT + padB + 20;   // 兜底，别算出负高度
+
+  var svg = el('svg', { role: 'img', 'aria-label':
+    t.name + (t.metricLabel || '一次合格率') + '按日趋势，区间 ' +
+    (typeof t.rate === 'number' ? t.rate.toFixed(1) + '%' : '无数据') +
+    '，目标 ' + target + '%' });
+  plot.appendChild(svg);
+  sizeSvg(svg, W, H);
+
+  var plotW = W - padL - padR, plotH = H - padT - padB;
+  var x = function (k) { return padL + (sp.length === 1 ? plotW / 2 : k * plotW / (sp.length - 1)); };
+  // 定标排除了小样本点，个别点会落到轴外 —— 夹回画布内
+  var y = function (v) {
+    var raw = padT + plotH - (v - lo) / (hi - lo) * plotH;
+    return Math.max(padT, Math.min(padT + plotH, raw));
+  };
+  var weakAt = function (k) { return thinAt(t, k, data); };
+
+  // 纵轴只标首末两档。这条带子很扁，标满刻度会糊成一片
+  var vs = [lo, hi], vi;
+  for (vi = 0; vi < vs.length; vi++) {
+    svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: y(vs[vi]), y2: y(vs[vi]),
+      stroke: 'var(--grid)', 'stroke-width': 1 }));
+    svg.appendChild(el('text', { x: padL - 12, y: y(vs[vi]) + 6, 'text-anchor': 'end',
+      fill: 'var(--ink-muted)', 'font-size': 17,
+      'font-variant-numeric': 'tabular-nums' }, vs[vi] + '%'));
+  }
+
+  // 目标线是真正的阈值，虚线在这里是正当用法
+  svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: y(target), y2: y(target),
+    stroke: 'var(--warning)', 'stroke-width': 2, 'stroke-dasharray': '8 6', 'stroke-linecap': 'round' }));
+  svg.appendChild(el('text', { x: padL + plotW + 10, y: y(target) + 6,
+    fill: 'var(--ink-2)', 'font-size': 17 }, '目标 ' + target + '%'));
+
+  for (j = 1; j < sp.length; j++) {
+    if (typeof sp[j] !== 'number' || typeof sp[j - 1] !== 'number') continue;
+    svg.appendChild(el('path', {
+      d: 'M' + x(j - 1) + ',' + y(sp[j - 1]) + ' L' + x(j) + ',' + y(sp[j]),
+      fill: 'none', stroke: 'var(--series-1)', 'stroke-width': 3,
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+      opacity: (weakAt(j) || weakAt(j - 1)) ? 0.35 : 1 }));
+  }
+  for (j = 0; j < sp.length; j++) {
+    if (typeof sp[j] !== 'number') continue;
+    svg.appendChild(el('circle', { cx: x(j), cy: y(sp[j]), r: weakAt(j) ? 4 : 5,
+      fill: weakAt(j) ? 'var(--surface)' : 'var(--series-1)',
+      stroke: weakAt(j) ? 'var(--series-1)' : 'var(--surface)',
+      'stroke-width': 2, opacity: weakAt(j) ? 0.6 : 1 }));
+  }
+
+  // 日期轴。点多的时候隔一个标一个，免得挤成一坨
+  var every = sp.length > 16 ? 2 : 1;
+  for (j = 0; showDays && j < sp.length; j++) {
+    if (j % every !== 0 && j !== sp.length - 1) continue;
+    var q = t.sparkQty ? t.sparkQty[j] : 1;
+    svg.appendChild(el('text', { x: x(j), y: padT + plotH + 24, 'text-anchor': 'middle',
+      fill: 'var(--ink-muted)', 'font-size': 17, 'font-variant-numeric': 'tabular-nums',
+      opacity: q > 0 ? (weakAt(j) ? 0.55 : 1) : 0.4 }, data.series[j] ? data.series[j].t : ''));
+  }
+}
+
+// 切到当前页：并排页显示 #sparks，类型页显示 #focus。
+// 两者不能同时可见 —— 隐藏的那个 clientWidth 是 0，SVG 会被量成 0 宽
+function showLoopPage() {
+  if (!CURRENT) return;
+  var sparks = document.getElementById('sparks');
+  var focus = document.getElementById('focus');
+  var title = document.getElementById('groupTitle');
+  var sub = document.getElementById('groupSub');
+  var page = LOOP_PAGES.length ? LOOP_PAGES[loopIdx] : null;
+
+  if (!LOOP_ON || !page || page.kind === 'all') {
+    sparks.style.display = '';
+    focus.className = 'focus';
+    title.textContent = '各生产类型合格率';
+    sub.textContent = GROUP_SUB_ALL;
+  } else {
+    var t = CURRENT.types[page.i];
+    sparks.style.display = 'none';
+    focus.className = 'focus on';
+    // 标题保持不变 —— 类型名由页内那个大号标题承担，两处都写就是重复，
+    // 而且标题一页一变会让人以为整块看板换了内容
+    title.textContent = '各生产类型合格率';
+    sub.textContent = t.mode === 'sparse'
+      ? '样本不足，只给区间累计值'
+      : CURRENT.series.length + ' 天 · 纵轴与其它类型一致，可直接比高低';
+    buildFocus(CURRENT, t);
+  }
+  renderDots();
+  drawStage();
+}
+
+function drawStage() {
+  if (!CURRENT) return;
+  var page = LOOP_PAGES.length ? LOOP_PAGES[loopIdx] : null;
+  if (!LOOP_ON || !page || page.kind === 'all') drawSparks(CURRENT);
+  else drawFocus(CURRENT, CURRENT.types[page.i]);
+}
+
+// 翻页**不用 setInterval 计时**，改成记一个「上次翻页的时刻」，由每秒的
+// 时钟心跳去比对。原因是踩过的一个真 bug：
+//
+//   原来是 startLoop() → stopLoop() + setInterval(15秒)。而 startLoop() 在
+//   render()（每 60 秒随数据刷新）和 visibilitychange 里都会被调到，每调一次
+//   就把 15 秒倒计时清零重数。进全屏时 MAXHUB 会连着抛 resize /
+//   fullscreenchange / visibilitychange，这些事件只要来得比 15 秒密，
+//   倒计时就永远数不完 —— 表现就是「全屏之后只转一次就不动了」。
+//
+// 记时刻不记倒计时，就没有「被清零」这回事：
+//   · 谁调多少次都不影响进度
+//   · 定时器被安卓挂起后醒来，一比对发现早该翻了，立刻补上
+//   · 心跳被节流成几秒一次也只是稍微晚一点，不会卡死
+var loopLastFlip = 0;
+
+// 由 tickClock 每秒调一次
+function loopTick() {
+  if (!LOOP_ON || LOOP_PAGES.length < 2) return;
+  var now = Date.now();
+  if (!loopLastFlip) { loopLastFlip = now; return; }   // 第一页也要完整停够一轮
+  if (now - loopLastFlip < LOOP_MS) return;
+  loopLastFlip = now;
+  loopIdx = (loopIdx + 1) % LOOP_PAGES.length;
+  showLoopPage();
+}
+
+// 上电/换数据时只「起表」，不重置进度 —— 已经在计的那一页该翻还是要翻
+function loopArm() {
+  if (!loopLastFlip) loopLastFlip = Date.now();
 }
 
 // ═══════════════════════════════════════════════════════════════
 // 表格视图 —— 每张图的等价物。大屏上折叠着，但值永远拿得到，
 // 不会出现「只有把鼠标悬上去才能读到数」的情况（大屏根本没鼠标）
 // ═══════════════════════════════════════════════════════════════
+var LAST_TABLE_HTML = null;
+
 function renderTable(data) {
   var fmt = function (v) { return typeof v === 'number' ? v.toFixed(1) : '—'; };
   var dim = function (p) { return p.output > 0 && p.output < data.minSample ? ' style="color:var(--ink-muted)"' : ''; };
@@ -726,21 +1224,65 @@ function renderTable(data) {
       '<tr><td>良品率（%）</td>' + rowRate + '</tr>' +
     '</tbody></table>';
 
-  var groups = data.groups || [];
-  if (groups.length) {
-    html += '<table><thead><tr><th>产品</th>' + days + '<th>状态</th></tr></thead><tbody>';
-    for (i = 0; i < groups.length; i++) {
-      var g = groups[i], vals = [];
-      for (j = 0; j < g.spark.length; j++) if (typeof g.spark[j] === 'number') vals.push(g.spark[j]);
-      var cur = vals.length ? vals[vals.length - 1] : null;
-      var gr = cur === null ? null : GRADE[gradeOf(cur, data.target)];
-      html += '<tr><td>' + esc(g.name) + '</td>';
-      for (j = 0; j < g.spark.length; j++) html += '<td>' + fmt(g.spark[j]) + '</td>';
-      html += '<td>' + (gr ? gr.icon + ' ' + gr.text : '—') + '</td></tr>';
+  // 生产类型表。sparse 的类型（清分机）在图上没有折线，
+  // 它的逐日值只能在这里读到 —— 这张表是它唯一的出口
+  var types = data.types || [];
+  if (types.length) {
+    html += '<table><thead><tr><th>生产类型</th><th>指标</th>' + days +
+            '<th>区间</th><th>目标</th><th>状态</th></tr></thead><tbody>';
+    for (i = 0; i < types.length; i++) {
+      var t = types[i];
+      var tg = typeof t.target === 'number' ? t.target : data.target;
+      var gr = typeof t.rate === 'number' ? GRADE[gradeOf(t.rate, tg)] : null;
+      html += '<tr><td>' + esc(t.name) + '</td><td>' + esc(t.metricLabel || '一次合格率') + '</td>';
+      for (j = 0; j < t.spark.length; j++) {
+        html += '<td' + (thinAt(t, j, data) ? ' style="color:var(--ink-muted)"' : '') +
+                '>' + fmt(t.spark[j]) + '</td>';
+      }
+      html += '<td>' + fmt(t.rate) + '</td><td>' + tg + '</td>' +
+              '<td>' + (gr ? gr.icon + ' ' + gr.text : '—') + '</td></tr>';
     }
     html += '</tbody></table>';
+    html += '<div class="spark-target">淡色＝当日样本不足 ' + data.minSample +
+            ' 件，比率仅供参考（流水按各环节分别判定）</div>';
   }
+
+  // 流水三环节。大屏第 2 页放大流水时，「哪个环节拖后腿」只有这张表答得出
+  var fs = data.flowStages || [];
+  if (fs.length) {
+    html += '<table><thead><tr><th>流水环节</th><th>检验数</th><th>不良数</th>' +
+            '<th>合格率（%）</th></tr></thead><tbody>';
+    for (i = 0; i < fs.length; i++) {
+      html += '<tr><td>' + esc(fs[i].label) + '</td><td>' + group(fs[i].qty || 0) + '</td>' +
+              '<td>' + group(fs[i].defect || 0) + '</td><td>' + fmt(fs[i].rate) + '</td></tr>';
+    }
+    html += '<tr><td><strong>直通率</strong></td><td colspan="2">三环节相乘</td>' +
+            '<td><strong>' + fmt(data.flowFpy) + '</strong></td></tr>';
+    html += '</tbody></table>';
+    html += '<div class="spark-target">直通率 ＝ 电检合格率 × 装配检合格率 × 流水检合格率；' +
+            '互检无分母，不参与计算</div>';
+  }
+
+  var groups = data.groups || [];
+  if (groups.length) {
+    html += '<table><thead><tr><th>产品</th>' + days + '<th>区间</th><th>件数</th></tr></thead><tbody>';
+    for (i = 0; i < groups.length; i++) {
+      var g = groups[i];
+      html += '<tr><td>' + esc(g.name) + '</td>';
+      for (j = 0; j < g.spark.length; j++) html += '<td>' + fmt(g.spark[j]) + '</td>';
+      html += '<td>' + fmt(g.rate) + '</td><td>' + group(g.qty || 0) + '</td></tr>';
+    }
+    html += '</tbody></table>';
+    html += '<div class="spark-target">「哪条线拖后腿」看上面的生产类型表，这张回答的是「哪个机型不良多」</div>';
+  }
+
+  // 服务端向 OA 取数有 5 分钟缓存，而这里 60 秒就重画一次 —— 绝大多数
+  // 时候表格内容一个字都没变。内容没变就别碰 DOM：重设 innerHTML 会把
+  // 滚动位置打回顶端，表格每分钟自己跳一次，看起来像在抽风
+  if (html === LAST_TABLE_HTML) return;
+  LAST_TABLE_HTML = html;
   document.getElementById('tableView').innerHTML = html;
+  autoScrollReset();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -754,17 +1296,33 @@ function applyData(data) {
   document.getElementById('range').textContent = data.range || '';
   document.getElementById('trendSub').textContent =
     data.series.length + ' 天 · 按日（数据源只到天，没有更细的粒度）';
-  document.getElementById('groupSub').textContent =
-    '按检验量取前 ' + (data.groups || []).length + ' 位 · 共用同一纵轴，形状可直接互比';
+  var tps = data.types || [], sparseN = 0, ti;
+  for (ti = 0; ti < tps.length; ti++) if (tps[ti].mode === 'sparse') sparseN++;
+  // 考核表的公式是「当月合格数量/总数量」，这里是滚动窗口 —— 跨月时
+  // 两个数不一样。大屏上的数常被直接抄去上报，不写明就会抄错
+  GROUP_SUB_ALL = tps.length + ' 个类型 · 共用同一纵轴，形状可直接互比 · 目标线为季度 KPI'
+    + (sparseN ? '（其中 ' + sparseN + ' 个样本不足，只给区间值不画趋势）' : '')
+    + ' · 区间为滚动 ' + data.series.length + ' 天，考核按当月累计，两者不等价';
+  document.getElementById('groupSub').textContent = GROUP_SUB_ALL;
   document.getElementById('rateLabel').textContent =
     s.latestDate ? s.latestDate + ' 良品率' : '最新一日良品率';
 
   if (typeof s.rate === 'number') {
-    var g = GRADE[gradeOf(s.rate, data.target)];
     document.getElementById('figRate').textContent = s.rate.toFixed(1);
-    document.getElementById('figStatus').innerHTML =
-      '<span class="ic" style="color:' + g.color + '">' + g.icon + '</span>' +
-      g.text + '（目标 ' + data.target + '%）';
+    // 顶部这个数是全厂合计（接口 5 全量，1 − 不良数 ÷ 检验数），**不是考核指标**：
+    // 考核表的质量类是四条线各自的一次合格率/直通率，没有全厂这一档，
+    // 而且四条线口径互不相同，合起来的数本就不该拿一条推算线打红绿灯。
+    // 以前这里显示「达标/未达标（目标 96.5%）」，是个假的红绿灯 ——
+    // 挂在车间墙上一天，全车间都会记住那个假结论
+    if (data.targetIsKpi === false) {
+      document.getElementById('figStatus').innerHTML =
+        '全厂合计 · 非考核指标（各线 KPI 见下方卡片）';
+    } else {
+      var g = GRADE[gradeOf(s.rate, data.target)];
+      document.getElementById('figStatus').innerHTML =
+        '<span class="ic" style="color:' + g.color + '">' + g.icon + '</span>' +
+        g.text + '（目标 ' + data.target + '%）';
+    }
   } else {
     document.getElementById('figRate').textContent = '--';
     document.getElementById('figStatus').textContent = '当日无检验数据';
@@ -790,6 +1348,7 @@ function applyData(data) {
   } else ddl.textContent = '';
 
   buildSparks(data);
+  buildLoopPages(data);
   renderTable(data);
 
   // 分子分母不同源的风险要显式暴露，不能静默地错
@@ -809,12 +1368,14 @@ function drawCharts() {
   if (!CURRENT) return;
   renderTrend(CURRENT);
   renderDefects(CURRENT);
-  drawSparks(CURRENT);
+  drawStage();
 }
 
 function render(data) {
   CURRENT = data;
   applyData(data);
+  showLoopPage();   // 把当前页的 DOM 摆好，fit() 才量得到正确高度
+  loopArm();        // 必须在 fit() 之前：fit() 万一抛异常，轮播不能跟着一起死
   fit();
 }
 
@@ -830,28 +1391,148 @@ function render(data) {
 // ═══════════════════════════════════════════════════════════════
 var DESIGN_W = 1920, DESIGN_H = 1080, BASE = 16;
 
-function tableOpen() {
-  var d = document.querySelector('.table-view');
-  return !!(d && d.open);
-}
-
 function fit() {
   var doc = document.documentElement;
   var vw = doc.clientWidth, vh = doc.clientHeight;
+  // 全屏切换过程中量到过 0 —— 那时候 k 算出来是 0，根字号被设成 0px，
+  // 整块看板会塌成看不见，而且要等下一次 resize 才可能恢复。
+  // 量不到就直接不动，保持上一次的字号
+  if (!vw || !vh) return;
   var k = Math.min(vw / DESIGN_W, vh / DESIGN_H);
   doc.style.fontSize = (BASE * k) + 'px';
   drawCharts();
 
-  // 表格视图展开时不回缩。表格又宽又高（14 天 × 3 行，再加 6 个产品 × 14 列），
-  // 为了把它塞进一屏而把整块看板一起缩小，会让所有字都变小 —— 五米外就废了。
-  // 而展开是有人站到屏前主动点的，那时候滚动比缩放合理
-  if (tableOpen()) return;
-
+  // 这里原来有一条「表格展开时不回缩」的例外：那时表格是 <details>，
+  // 展开后又宽又高，为了塞进一屏把整块看板缩小会让所有字都变小。
+  // 现在表格常驻在一个定高的盒子里自己滚，看板总高恒定且可预测，
+  // 这条例外就不需要了 —— 回缩规则重新变得没有特例，永远保证一屏
   var h = document.getElementById('board').offsetHeight;
   if (h > vh) {
     doc.style.fontSize = (BASE * k * (vh / h) * 0.995) + 'px';
     drawCharts();
   }
+
+  autoScrollSync();   // 字号一变，内容高度跟着变，滚动区间要重算（但不重置位置）
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 表格自动上下滚
+//
+// 车间这块屏没有鼠标也没有人操作，滚动条是给不了的 —— 要么自己滚，
+// 要么下半截的数永远没人看得到。
+//
+// 走 scrollTop 逐帧步进，不用 CSS transition/animation：老 WebView 上
+// 长时间跑的 CSS 动画会掉帧甚至被合成器丢掉，而这块屏是几个月不重启的。
+// 一格一格地加，慢但绝不会停。
+//
+// 节奏：顶部停 3 秒 → 匀速滚到底 → 底部停 3 秒 → 跳回顶 → 再停 3 秒 → 循环。
+//
+// 单向滚 + 跳回顶，不是往复滚。两端各停 3 秒，跳回去之后**还要再停一次**
+// 才开始滚 —— 跳变是瞬间的，紧接着就动的话，人会分不清刚才是跳回了顶部
+// 还是画面出了问题；停一拍，让顶部这一屏先落定
+// ═══════════════════════════════════════════════════════════════
+// 和轮播同一个教训，这里踩得更狠：原来「量到 over <= 2 就 stopAutoScroll()」
+// 是一条**永久死路**。全屏切换过程中盒子会短暂量出 0（scrollHeight 和
+// clientHeight 都读到 0），于是定时器被停掉，而当时只有 fit() 会再叫醒它 ——
+// 全屏之后不一定还有 fit()，表格就再也不滚了。表现正是「全屏时只滚一次」。
+//
+// 现在两条都改掉：
+//   · 进度按**真实经过的时间**算，不再假设定时器精确每 40ms 触发一次
+//     （被节流时，旧写法的 3 秒停顿和滚动速度都会失真）
+//   · 每秒的时钟心跳兼任**看门狗**：定时器要是死了、而内容确实溢出，
+//     下一秒就把它接回来。停表因此变成可恢复的，不再是绝路
+var AS_STEP_MS   = 40;      // 刷新间隔（只管画得顺不顺，不再决定速度）
+var AS_SPEED     = 15;      // 滚动速度：px/秒
+var AS_PAUSE_MS  = 3000;    // 顶部和底部各停多久
+
+// 速度按 px/秒 定，不按「一趟滚多少秒」定：表格高度随数据变（产品多一行就高
+// 一截），定成固定时长的话，数据一多字就飞得快，正好在最该看的时候读不了。
+// 定成速度，读起来永远是同一个节奏。
+//
+// 现场调：网址后面加 ?scroll=10 就是 10 px/秒（越慢越从容），允许 3~60，
+// 越界的值当没写。改完刷新即可，不用重新部署
+(function () {
+  var m = /[?&]scroll=([^&]*)/.exec(location.search);
+  if (!m) return;
+  var n = parseFloat(decodeURIComponent(m[1]));
+  if (isFinite(n) && n >= 3 && n <= 60) AS_SPEED = n;
+})();
+var asTimer = null;
+var asLast = 0;             // 上一帧的时刻，用来算真实 dt
+var asHold = 0;             // 还要停多少毫秒
+var asPos  = 0;             // 当前位置（小数累积，scrollTop 只能是整数）
+
+function asBox() { return document.getElementById('tvBox'); }
+
+// 每秒由 tickClock 调一次（看门狗），fit() 改完字号后也调一次。
+// **不动当前位置** —— 顺手拉回顶端的话，滚动永远走不完一轮
+function autoScrollSync() {
+  var box = asBox();
+  if (!box) return;
+  var over = box.scrollHeight - box.clientHeight;
+  var hint = document.getElementById('tvHint');
+  // 这个函数每秒都被心跳调一次，文字没变就别写 DOM ——
+  // 每秒一次无谓的 textContent 赋值会带来每秒一次的布局失效
+  var label = over <= 2 ? '' : '自动滚动 · 到底回顶';
+  if (hint && hint.textContent !== label) hint.textContent = label;
+
+  if (over <= 2) {
+    // 内容放得下（或这一刻根本量不出来）：停表。
+    // 现在停是安全的 —— 下一秒心跳还会再来看一眼
+    stopAutoScroll();
+    return;
+  }
+  if (asPos > over) { asPos = over; box.scrollTop = over; }   // 字号变了，别停在区间外
+  if (!asTimer) startAutoScroll();
+}
+
+// 回到顶端重新开始。只在表格内容真的换了的时候调（见 renderTable）
+function autoScrollReset() {
+  var box = asBox();
+  if (!box) return;
+  asPos = 0;
+  box.scrollTop = 0;
+  asLast = 0;
+  // 先停一拍再开滚：不先停的话，页面刚出来表格就已经在动，
+  // 第一张表（按日的检验数/不良数/良品率）会在没人看清之前滚过去
+  asHold = AS_PAUSE_MS;
+  autoScrollSync();
+}
+
+function stopAutoScroll() {
+  if (asTimer) { clearInterval(asTimer); asTimer = null; }
+  asLast = 0;               // 下次接回来时重新起算，别把停摆那段算成 dt
+}
+
+function startAutoScroll() {
+  stopAutoScroll();
+  asTimer = setInterval(function () {
+    var box = asBox();
+    if (!box) return;
+    var over = box.scrollHeight - box.clientHeight;
+    // 这一拍量不出来（全屏切换中）就跳过，**不停表** ——
+    // 停在这里等于把恢复的机会交给一个不一定会来的 fit()
+    if (over <= 2) { asLast = 0; return; }
+
+    var now = Date.now();
+    var dt = asLast ? now - asLast : AS_STEP_MS;
+    asLast = now;
+    if (dt > 1000) dt = 1000;   // 被挂起过，别一帧就冲到底
+
+    if (asHold > 0) { asHold -= dt; return; }
+
+    // 停够了 → 跳回顶端，再停一拍才继续滚
+    if (asPos >= over) {
+      asPos = 0;
+      box.scrollTop = 0;
+      asHold = AS_PAUSE_MS;
+      return;
+    }
+
+    asPos += AS_SPEED * dt / 1000;
+    if (asPos >= over) { asPos = over; asHold = AS_PAUSE_MS; }   // 到底，钉住停 3 秒
+    box.scrollTop = Math.round(asPos);
+  }, AS_STEP_MS);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -977,8 +1658,15 @@ function showServerTag() {
 
 showServerTag();
 
+// 每秒一次的心跳。除了走时钟，还兼两件事：
+//   · 轮播搭这趟车（不自己另开一个会被清零的定时器）
+//   · 给表格滚动当看门狗：它的 40ms 定时器要是被全屏切换或系统节流弄停了，
+//     下一秒就接回来。看门狗是整套的关键 —— 有它，任何一处「停表」都只是
+//     暂时的，不会变成再也起不来
 function tickClock() {
   document.getElementById('clock').textContent = hms(new Date());
+  loopTick();
+  autoScrollSync();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -986,9 +1674,15 @@ function tickClock() {
 // ═══════════════════════════════════════════════════════════════
 
 // (1) 切后台 / 息屏 / 切信号源之后，定时器会被节流甚至完全暂停，
-//     时钟停在旧时间且不会自纠，轮询也停了。回前台立刻补一次
+//     时钟停在旧时间且不会自纠，轮询也停了。回前台立刻补一次。
+//     轮播不在这里重启 —— 它记的是「上次翻页的时刻」，醒来后 tickClock
+//     一比对就自己补上了，这里再插一手反而容易把进度弄乱
 document.addEventListener('visibilitychange', function () {
-  if (!document.hidden) { tickClock(); load(); keepAwake(); fit(); }
+  if (!document.hidden) {
+    tickClock(); load(); keepAwake(); autoScrollSync(); fit();
+  } else {
+    stopAutoScroll();
+  }
 });
 
 // (2) 屏幕自己睡。wakeLock 要 Chromium 84+ 且 https，
@@ -1024,15 +1718,9 @@ window.addEventListener('resize', fit);
 window.addEventListener('orientationchange', function () { setTimeout(fit, 300); });
 document.addEventListener('fullscreenchange', function () { setTimeout(fit, 100); });
 document.addEventListener('webkitfullscreenchange', function () { setTimeout(fit, 100); });
-// 展开/收起表格视图会改变页面高度，重新算一次（展开时 fit 不再回缩，改成滚动）。
-// toggle 事件不冒泡，所以用捕获
-document.addEventListener('toggle', function (ev) {
-  fit();
-  // 表格在页面最底下，展开后不滚过去的话，点了像是没反应
-  if (ev.target && ev.target.open && ev.target.scrollIntoView) {
-    try { ev.target.scrollIntoView(); } catch (e) {}
-  }
-}, true);
+// 表格视图以前是 <details>，这里原来监听 toggle 来重算高度、并在展开时
+// 暂停轮播。现在表格常驻展开、在自己的盒子里滚，没有 toggle 可听了，
+// 整个监听连同那套暂停逻辑一起删掉。
 
 // ═══════════════════════════════════════════════════════════════
 // 启动

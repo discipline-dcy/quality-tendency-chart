@@ -128,14 +128,14 @@
   /* 图容器高度随内容走，不写死 —— 写死会把 x 轴文字挤出去 */
   svg { display: block; width: 100%; height: auto; overflow: visible; }
 
-  /* 小倍数：列数取 6 的因数，两行才对得齐 */
+  /* 小倍数：一行放下全部生产类型。类型是有限的几个（流水/改型/清分机），
+     不像产品代码那样会长出十几个，所以不需要换行的栅格 */
   .spark-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: clamp(10px, 1.2vw, 20px);
   }
-  @media (min-width: 1400px) { .spark-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
-  @media (max-width: 620px)  { .spark-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 820px) { .spark-grid { grid-template-columns: 1fr; } }
 
   .spark-card { display: flex; flex-direction: column; gap: .4em; min-width: 0; }
   .spark-head { display: flex; align-items: baseline; gap: .5em; min-width: 0; }
@@ -151,6 +151,19 @@
     white-space: nowrap;
   }
   .spark-status { font-size: clamp(11px, .95vw, 15px); color: var(--ink-2); display: flex; align-items: center; gap: .4em; }
+  .spark-target { font-size: clamp(11px, .9vw, 14px); color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+
+  /* 样本量撑不起趋势的类型：不画图，占位写明为什么。
+     高度和迷你图对齐，三张卡的基线才不会错开 */
+  .spark-none {
+    display: flex; align-items: center;
+    aspect-ratio: 240 / 56;
+    font-size: clamp(11px, .95vw, 15px);
+    color: var(--ink-muted);
+    line-height: 1.45;
+    border-top: 1px solid var(--hairline);
+    border-bottom: 1px solid var(--hairline);
+  }
 
   /* 表格视图：每张图的等价物，不靠颜色传信息 */
   details.table-view { margin-top: .5em; }
@@ -243,12 +256,15 @@
 
   <section class="card">
     <h2 class="panel-title">
-      各产品良品率
-      <span class="sub" id="groupSub">按检验量取前几位 · 共用同一纵轴，形状可直接互比</span>
+      各生产类型合格率
+      <span class="sub" id="groupSub">共用同一纵轴，形状可直接互比</span>
     </h2>
     <div class="spark-grid" id="sparks"></div>
 
-    <details class="table-view">
+    <!-- 默认展开。藏起来的值等于不存在，而这一份是所有图的等价物。
+         但电脑版**不做自动滚动** —— 这里有鼠标有滚轮，页面自己动只会
+         跟正在读数的人抢控制权。大屏版没有鼠标，那边才需要自动滚 -->
+    <details class="table-view" open>
       <summary>表格视图（全部数值）</summary>
       <div class="scroller" id="tableView"></div>
     </details>
@@ -277,35 +293,96 @@
 const DEMO = {
   updatedAt: new Date().toISOString(),
   range: '示例数据（未连接 OA）',
-  target: 98.5,
-  minSample: 200,
+  target: 96.5,
+  targetIsKpi: false,   // 全厂合计那条是推算的参考线，考核表里没有这一档
+  minSample: 50,
+  rateFloor: 90,        // 纵轴最低画到 90%；低于此值的日期标红
+  // 下面这些数字是**互相对得上**的：series 按日合计 = 三个 types 之和，
+  // summary 又是 series 算出来的。离线看版面时顶部 KPI 和卡片对不上，
+  // 会被当成真 bug 查半天
   summary: {
-    rate: 97.9, defect: 86, output: 4185, periodRate: 98.2,
-    rateDelta: -0.5, defectDelta: 12, deltaBase: '前一有数据日', latestDate: '2026-07-29',
+    rate: 97, defect: 10, output: 328, periodRate: 95.9,
+    rateDelta: 5.1, defectDelta: -6, deltaBase: '前一有数据日', latestDate: '2026-08-03',
   },
   series: [
-    { t: '07-16', date: '2026-07-16', output: 3980, defect:  52, rate: 98.7 },
-    { t: '07-17', date: '2026-07-17', output: 4120, defect:  49, rate: 98.8 },
-    { t: '07-18', date: '2026-07-18', output: 4010, defect:  56, rate: 98.6 },
-    { t: '07-19', date: '2026-07-19', output:    0, defect:   0, rate: null },  // 周末无检验
-    { t: '07-20', date: '2026-07-20', output: 3890, defect:  78, rate: 98.0 },
-    { t: '07-21', date: '2026-07-21', output: 4230, defect:  62, rate: 98.5 },
-    { t: '07-22', date: '2026-07-22', output:  150, defect:   5, rate: 96.7 },  // 样本不足
-    { t: '07-23', date: '2026-07-23', output: 4050, defect:  71, rate: 98.2 },
-    { t: '07-24', date: '2026-07-24', output: 3960, defect:  95, rate: 97.6 },
-    { t: '07-25', date: '2026-07-25', output: 4180, defect: 118, rate: 97.2 },
-    { t: '07-26', date: '2026-07-26', output:    0, defect:   0, rate: null },
-    { t: '07-27', date: '2026-07-27', output: 4090, defect: 133, rate: 96.7 },  // 低谷
-    { t: '07-28', date: '2026-07-28', output: 4150, defect: 104, rate: 97.5 },
-    { t: '07-29', date: '2026-07-29', output: 4185, defect:  86, rate: 97.9 },
+    { t: '07-22', date: '2026-07-22', output:  346, defect:  12, rate: 96.5 },
+    { t: '07-23', date: '2026-07-23', output:  403, defect:  14, rate: 96.5 },
+    { t: '07-24', date: '2026-07-24', output:  444, defect:  10, rate: 97.7 },
+    { t: '07-25', date: '2026-07-25', output:  256, defect:   8, rate: 96.9 },
+    { t: '07-26', date: '2026-07-26', output:    0, defect:   0, rate: null },  // 周末无检验
+    { t: '07-27', date: '2026-07-27', output:  414, defect:  18, rate: 95.7 },
+    { t: '07-28', date: '2026-07-28', output:  544, defect:  17, rate: 96.9 },
+    { t: '07-29', date: '2026-07-29', output:  501, defect:  27, rate: 94.6 },
+    { t: '07-30', date: '2026-07-30', output:  351, defect:  18, rate: 94.9 },
+    { t: '07-31', date: '2026-07-31', output:  351, defect:  21, rate: 94   },
+    { t: '08-01', date: '2026-08-01', output:  198, defect:  16, rate: 91.9 },  // 低谷
+    { t: '08-02', date: '2026-08-02', output:    0, defect:   0, rate: null },
+    { t: '08-03', date: '2026-08-03', output:  328, defect:  10, rate: 97   },
+    { t: '08-04', date: '2026-08-04', output:    0, defect:   0, rate: null },
   ],
+  // 主视觉：按检验类型。四张卡对应车间实际的四条线，量级和形态照真实数据捏的 ——
+  // 清分机日均只有个位数，是 sparse（样本撑不起趋势）那一档的样板
+  //
+  // ⚠ 四张卡不是同一个指标，metricLabel 必须跟着数一起给：
+  //   流水 = 一次直通率（三环节相乘，天然低一截）、组件 = 抽检一次合格率、
+  //   改型和清分机 = 一次合格率。四项在品质部考核表里全是「一次」口径。
+  //   目标线是季度 KPI，这里取 Q3 的那一档
+  types: [
+    { name: '流水生产', qty: 3516, defect: 154, rate: 82.4, yieldRate: 95.6,
+      metric: 'fpy', metricLabel: '一次直通率', target: 90, mode: 'daily',
+      activeDays: 12, medianQty: 274, noDenomDefect: 0, lowSample: false,
+      stages: [
+        { id: 'electrical', label: '电检',   qty:  607, defect: 81, rate: 86.7 },
+        { id: 'assembly',   label: '装配检', qty: 1515, defect: 39, rate: 97.4 },
+        { id: 'line',       label: '流水检', qty: 1394, defect: 34, rate: 97.6 },
+      ],
+      spark:     [ 90.2, 83.6, 87.5, 85.3, null, 43.8, 73.7, 85.4, 75.4, 78.0, 91.2, null, 84.1, null],
+      sparkQty:  [  216,  304,  316,  226,    0,  186,  387,  344,  186,  257,  162,    0,  274,    0],
+      // 07-30 那天流水共 186 件，但电检只做了 15 件 —— 直通率被拉到 43.8%。
+      // 按当日总量判它是达标样本，只有按环节判才标得出来
+      sparkThin: [false,false,false,false,false, true,false,false, true,false, true,false,false,false] },
+    { name: '组件生产', qty: 3066, defect: 1, qualified: 3065, rate: 99.97, decimals: 2,
+      metric: 'pass', metricLabel: '一次合格率', target: 99.7, mode: 'daily',
+      source: '组件抽检巡检单', activeDays: 13, medianQty: 190, noDenomDefect: 0, lowSample: false,
+      spark:     [  100,  100,  100,  100,99.51,  100,  100,  100, null,  100,  100,  100,  100,  100],
+      sparkQty:  [  114,  127,  180,  191,  206,  194,  302,  143,    0,  286,  186,  190,  321,  626],
+      sparkThin: [false,false,false,false,false,false,false,false,false,false,false,false,false,false] },
+    { name: '成品改型', qty: 918, defect: 16, rate: 98.3,
+      metric: 'yield', metricLabel: '一次合格率', target: 96, mode: 'daily',
+      activeDays: 11, medianQty: 93, noDenomDefect: 0, lowSample: false,
+      spark:     [ 99.2, 97.5, 99.2, 96.7, null, 96.8, 99.2, 94.4, 99.3, 94.6, 97.2, null, 98.1, null],
+      sparkQty:  [  130,   79,  128,   30,    0,   93,  127,  125,  135,   74,   36,    0,   52,    0],
+      sparkThin: [false, true,false, true,false,false,false,false,false, true, true,false,false,false] },
+    // 这张卡的 08-03：只检了 2 件、坏 2 件 → 0%。共用纵轴时它会把其余所有线
+    // 压成一条平线 —— sparse 卡不画图，正是为了这种点
+    { name: '硬币清分机', qty: 136, defect: 15, rate: 89,
+      metric: 'yield', metricLabel: '一次合格率', target: 92, mode: 'sparse',
+      activeDays: 7, medianQty: 25, noDenomDefect: 0, lowSample: false,
+      spark:     [ null,  100, null, null, null, null, 96.7, 87.5, 83.3,   90, null, null,    0, null],
+      sparkQty:  [    0,   20,    0,    0,    0,    0,   30,   32,   30,   20,    0,    0,    2,    0],
+      sparkThin: [false, true,false,false,false,false, true, true, true, true,false,false, true,false] },
+  ],
+  // 流水三环节，表格视图用。电检是瓶颈：合格率最低，检验量还不到另两个环节的一半
+  flowStages: [
+    { id: 'electrical', label: '电检',   qty:  607, defect: 81, rate: 86.7 },
+    { id: 'assembly',   label: '装配检', qty: 1515, defect: 39, rate: 97.4 },
+    { id: 'line',       label: '流水检', qty: 1394, defect: 34, rate: 97.6 },
+  ],
+  flowFpy: 82.4,
+  // 产品维度只进表格视图，不占主视觉 —— 「哪条线拖后腿」由上面三张卡回答
   groups: [
-    { name: 'A-1024 · 主控板',   spark: [99.2,99.0,98.8,null,98.9,99.1,98.7,99.1,99.0,98.9,null,98.8,99.0,99.1] },
-    { name: 'A-2087 · 驱动模块', spark: [98.9,98.6,98.7,null,98.4,98.6,98.5,98.6,98.5,98.4,null,98.3,98.5,98.6] },
-    { name: 'B-3310 · 外壳组件', spark: [98.7,98.8,98.5,null,97.9,97.6,96.8,96.9,96.5,96.2,null,95.8,96.1,96.4] },
-    { name: 'B-4152 · 传感器',   spark: [99.0,98.8,98.9,null,98.6,98.5,98.4,98.6,98.5,98.6,null,98.4,98.5,98.6] },
-    { name: 'C-5006 · 线束',     spark: [99.4,99.3,99.5,null,99.2,99.4,99.3,99.4,99.3,99.4,null,99.2,99.3,99.4] },
-    { name: 'C-6721 · 装配件',   spark: [98.2,98.1,97.9,null,97.6,97.4,97.2,97.1,97.0,97.0,null,96.9,97.0,97.0] },
+    { name: 'BCS-160A',    qty: 1420, defect: 61, rate: 95.7,
+      spark: [95.2,96.0,97.1,96.4,null,95.1,96.3,95.0,93.8,94.5,91.2,null,97.0,null] },
+    { name: 'HCS-3300',    qty: 986,  defect: 34, rate: 96.6,
+      spark: [96.9,96.5,97.4,97.2,null,95.8,96.4,96.1,94.9,95.6,93.1,null,97.8,null] },
+    { name: '点钞机半制品', qty: 604,  defect: 29, rate: 95.2,
+      spark: [94.1,95.3,96.0,95.5,null,94.2,95.1,94.6,92.8,93.4,89.9,null,96.2,null] },
+    { name: 'VS-75(M165)', qty: 512,  defect: 18, rate: 96.5,
+      spark: [97.2,96.8,97.0,96.1,null,96.4,96.9,95.8,96.2,95.9,94.7,null,97.5,null] },
+    { name: 'BC-30',       qty: 348,  defect: 12, rate: 96.6,
+      spark: [96.5,97.0,96.8,null,null,96.2,97.1,96.0,96.4,95.7,null,null,97.2,null] },
+    { name: 'HCS-2100',    qty: 266,  defect: 7,  rate: 97.4,
+      spark: [97.8,97.2,98.0,97.5,null,96.9,97.6,97.1,96.8,97.0,null,null,98.1,null] },
   ],
   crossCheck: null,
   counts: null,
@@ -337,10 +414,17 @@ const gradeOf = (rate, target) =>
 
 // 纵轴范围：良品率挤在 96–99 之间，从 0 起画会是一条直线。
 // 折线图允许截断纵轴（柱状图不允许 —— 柱长就是数值）
-function rateScale(values, target) {
+//
+// floor：纵轴最低必须画到这个刻度（默认 90%），这样「离 90 还有多远」
+// 在图上是同一把尺子，不会因为某周数据好就自动放大成一条平线。
+// 数据真跌破 floor 时继续往下让 —— 否则点会画到坐标区外面，
+// 标红的日期反而指向一个看不见的点。
+// 不传 floor 就按数据自适应：类型小倍数图共用一套刻度，强行下压会把三张卡压扁
+function rateScale(values, target, floor) {
   const nums = values.filter(v => typeof v === 'number');
-  const lo = Math.floor(Math.min(...(nums.length ? nums : [target]), target) - 0.5);
-  return { lo, hi: 100 };
+  let lo = Math.floor(Math.min(...(nums.length ? nums : [target]), target) - 0.5);
+  if (typeof floor === 'number') lo = Math.min(lo, floor);
+  return { lo: Math.max(0, lo), hi: 100 };   // 良品率没有负数，留一手防出现 0% 的日子把轴拉到 -1
 }
 
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -363,11 +447,13 @@ function renderTrend(data) {
   const pts = data.series;
   if (!pts.length) return;
 
-  const { lo, hi } = rateScale(pts.map(p => p.rate), data.target);
+  const floor = typeof data.rateFloor === 'number' ? data.rateFloor : 90;
+  const { lo, hi } = rateScale(pts.map(p => p.rate), data.target, floor);
   const x = i => padL + (pts.length === 1 ? plotW / 2 : i * plotW / (pts.length - 1));
   const y = v => padT + plotH - (v - lo) / (hi - lo) * plotH;
   const hasVal = i => typeof pts[i].rate === 'number';
   const weakAt = i => pts[i].output > 0 && pts[i].output < data.minSample;
+  const belowFloor = i => hasVal(i) && pts[i].rate < floor;
 
   // 网格：发丝实线，比数据弱一档（虚线会被读成「阈值」）
   const gridStep = (hi - lo) > 8 ? 2 : 1;
@@ -378,12 +464,15 @@ function renderTrend(data) {
       fill: 'var(--ink-muted)', 'font-size': 17, 'font-variant-numeric': 'tabular-nums' }, v + '%'));
   }
 
-  // 目标线：这是真正的阈值，虚线在这里是正当用法。
-  // 标签放左端线上方 —— 右侧留给末点数值，挤一起会叠字
+  // 这条线是全厂合计的**参考线**，不是 KPI —— 考核表的质量类只有四项，
+  // 没有「全厂合计」这一档，96.5 是推算出来的。写成「目标」会让人以为
+  // 全厂有考核线，进而拿它去判达标。真正的目标线在下面四张卡上，
+  // 那些才有考核表撑着。
   svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: y(data.target), y2: y(data.target),
     stroke: 'var(--warning)', 'stroke-width': 2, 'stroke-dasharray': '8 6', 'stroke-linecap': 'round' }));
   svg.appendChild(el('text', { x: padL + 4, y: y(data.target) - 10,
-    fill: 'var(--ink-2)', 'font-size': 17 }, '目标 ' + data.target + '%'));
+    fill: 'var(--ink-2)', 'font-size': 17 },
+    (data.targetIsKpi === false ? '参考 ' : '目标 ') + data.target + '%'));
 
   // 不画面积填充：纵轴是截断的，面积会把「离基线多远」说成「有多少」
 
@@ -425,18 +514,26 @@ function renderTrend(data) {
 
   svg.appendChild(el('line', { x1: padL, x2: padL + plotW, y1: padT + plotH, y2: padT + plotH,
     stroke: 'var(--axis)', 'stroke-width': 1 }));
-  // 日期多的时候隔一个标一个，免得挤成一坨
+  // 日期多的时候隔一个标一个，免得挤成一坨。
+  // 未达 floor 的日子是例外，一定要标出来 —— 被隔一个跳掉就等于没有提示
   const every = pts.length > 16 ? 2 : 1;
   pts.forEach((p, i) => {
-    if (i % every !== 0 && i !== pts.length - 1) return;
+    if (i % every !== 0 && i !== pts.length - 1 && !belowFloor(i)) return;
+    const bad = belowFloor(i);
     svg.appendChild(el('text', { x: x(i), y: padT + plotH + 28, 'text-anchor': 'middle',
-      fill: 'var(--ink-muted)', 'font-size': 17, 'font-variant-numeric': 'tabular-nums',
-      opacity: hasVal(i) ? (weakAt(i) ? 0.55 : 1) : 0.4 }, p.t));
+      fill: bad ? 'var(--critical)' : 'var(--ink-muted)',
+      'font-size': 17, 'font-weight': bad ? 700 : 400,
+      'font-variant-numeric': 'tabular-nums',
+      // 样本不足仍旧压暗，但压得比常规轻：这天既「不达标」又「不可靠」，
+      // 两个信息都要留住，不能让 0.55 把红色弱化到看不出来
+      opacity: bad ? (weakAt(i) ? 0.7 : 1) : (hasVal(i) ? (weakAt(i) ? 0.55 : 1) : 0.4),
+    }, p.t));
   });
 
-  // 纵轴不从 0 起必须说明，否则会被读成「良品率快掉到底了」
+  // 纵轴不从 0 起必须说明，否则会被读成「良品率快掉到底了」。
+  // 标红是新增的约定，同样得在图上讲清楚，不能让人猜
   svg.appendChild(el('text', { x: padL, y: 16, fill: 'var(--ink-muted)', 'font-size': 15 },
-    `纵轴 ${lo}–${hi}%（非零起点）· 空心点＝当日检验数不足 ${data.minSample} 件，比率仅供参考 · 断开＝当日无检验记录`));
+    `纵轴 ${lo}–${hi}%（非零起点）· 空心点＝当日检验数不足 ${data.minSample} 件，比率仅供参考 · 断开＝当日无检验记录 · 日期标红＝当日良品率低于 ${floor}%`));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -499,29 +596,51 @@ function renderDefects(data) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 小倍数：每个产品一张迷你折线
+// 小倍数：每个生产类型一张迷你折线
+//
+// 分组维度是「检验类型」（流水生产 / 成品改型 / 清分机），不是产品代码。
+// 理由：两个接口都有这个字段，分子分母能对齐；而且它回答的正是班组长
+// 真正要问的那句「哪条线拖的后腿」。产品维度退到表格视图，信息没丢。
 //
 // 所有小图共用同一个纵轴范围。各画各的范围会让所有线看起来一样陡，
-// 那是在骗人
+// 那是在骗人。
+//
+// 但共用纵轴有个前提：参与定标的点得是可信的。实测清分机有过「当天检 2 件、
+// 坏 2 件 → 0%」的点，让它参与定标会把其余两条线压成平线。所以：
+//   · 定标只用**样本量达标**的点（低于 minSample 的点画得出来，但不定标）
+//   · 整个类型都撑不起趋势的（mode: 'sparse'），干脆不画图 ——
+//     点是实测到的事实，线是我们编出来的，编不出来就别编
 // ═══════════════════════════════════════════════════════════════
-function renderSparks(data) {
+function renderTypes(data) {
   const box = document.getElementById('sparks');
   box.textContent = '';
-  const groups = data.groups || [];
-  if (!groups.length) {
+  const types = data.types || [];
+  if (!types.length) {
     box.innerHTML = '<div class="spark-status">区间内没有可分组的检验数据</div>';
     return;
   }
 
-  const { lo, hi } = rateScale(groups.flatMap(g => g.spark), data.target);
+  // 定标：只取画得出趋势的卡片里样本量达标的点，外加每张卡自己的目标线
+  const scaleVals = [];
+  types.forEach(t => {
+    if (typeof t.target === 'number') scaleVals.push(t.target);
+    if (t.mode === 'sparse') return;
+    t.spark.forEach((v, i) => {
+      const thin = t.sparkThin ? t.sparkThin[i] : (() => {
+        const q = (t.sparkQty || [])[i];
+        return q !== undefined && q > 0 && q < data.minSample;
+      })();
+      if (typeof v === 'number' && !thin) scaleVals.push(v);
+    });
+  });
+  const { lo, hi } = rateScale(scaleVals, data.target);
 
-  groups.forEach(g => {
-    const vals = g.spark.filter(v => typeof v === 'number');
-    // 大数字用整个区间的良品率（后端给的 g.rate）——面板标题写的是多少天，
-    // 数字就得是多少天的。取最后一天会被小样本带偏
-    const cur = typeof g.rate === 'number' ? g.rate
-              : (vals.length ? vals[vals.length - 1] : null);
-    const grade = cur === null ? null : GRADE[gradeOf(cur, data.target)];
+  types.forEach(t => {
+    const target = typeof t.target === 'number' ? t.target : data.target;
+    // 大数字用整个区间的良品率 —— 面板标题写的是多少天，数字就得是多少天的。
+    // 取最后一天会被小样本带偏
+    const cur = typeof t.rate === 'number' ? t.rate : null;
+    const grade = cur === null ? null : GRADE[gradeOf(cur, target)];
 
     const card = document.createElement('div');
     card.className = 'spark-card';
@@ -530,37 +649,31 @@ function renderSparks(data) {
     head.className = 'spark-head';
     const nm = document.createElement('span');
     nm.className = 'spark-name';
-    nm.textContent = g.name;
-    nm.title = g.name;
+    // 指标名必须写在卡上。四张卡不是同一个指标 —— 流水是一次直通率、
+    // 组件是抽检一次合格率、改型和清分机是一次合格率。不标出来，读者会拿
+    // 四个不可比的数横向比较，而且「82.4% 的流水」看着比「98.3% 的改型」
+    // 差得多，其实是两把不同的尺子。
+    // 「一次」两个字是考核表的原话（first-pass），少了会被读成最终合格率
+    nm.textContent = t.metricLabel ? `${t.name} · ${t.metricLabel}` : t.name;
+    nm.title = t.source ? `${t.name}（${t.metricLabel}，来源：${t.source}）` : nm.textContent;
     const rt = document.createElement('span');
     rt.className = 'spark-rate';
-    rt.textContent = cur === null ? '—' : cur.toFixed(1) + '%';
+    rt.textContent = cur === null ? '—' : cur.toFixed(t.decimals || 1) + '%';
     head.append(nm, rt);
     card.appendChild(head);
 
-    const W = 240, H = 56, padT = 6, padB = 6;
-    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img',
-      'aria-label': `${g.name} 良品率趋势，当前 ${cur === null ? '无数据' : cur.toFixed(1) + '%'}${grade ? '，' + grade.text : ''}` });
-    const x = i => g.spark.length === 1 ? W / 2 : i * W / (g.spark.length - 1);
-    const y = v => padT + (H - padT - padB) - (v - lo) / (hi - lo) * (H - padT - padB);
-
-    // 小图里也保留目标线，否则读者没有判断高低的锚点
-    svg.appendChild(el('line', { x1: 0, x2: W, y1: y(data.target), y2: y(data.target),
-      stroke: 'var(--warning)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4', opacity: .75 }));
-
-    for (let i = 1; i < g.spark.length; i++) {
-      if (typeof g.spark[i] !== 'number' || typeof g.spark[i - 1] !== 'number') continue;
-      svg.appendChild(el('path', {
-        d: `M${x(i - 1)},${y(g.spark[i - 1])} L${x(i)},${y(g.spark[i])}`,
-        fill: 'none', stroke: 'var(--series-1)', 'stroke-width': 2,
-        'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+    if (t.mode === 'sparse') {
+      // 样本撑不起趋势：写清楚为什么，不画任何几何图形。
+      // 画一条由 6 个点连成的线，读者会当成趋势去读，那是无中生有
+      const none = document.createElement('div');
+      none.className = 'spark-none';
+      none.textContent =
+        `近 ${data.series.length} 天仅 ${t.qty.toLocaleString('zh-CN')} 件、${t.activeDays} 天有检验，`
+        + `日均不足 ${data.minSample} 件，画趋势线是在把噪声当信号。逐日值见下方表格视图。`;
+      card.appendChild(none);
+    } else {
+      card.appendChild(buildSpark(t, target, lo, hi, data, cur, grade));
     }
-    if (cur !== null) {
-      const lastIdx = g.spark.reduce((b, v, i) => typeof v === 'number' ? i : b, 0);
-      svg.appendChild(el('circle', { cx: x(lastIdx), cy: y(cur), r: 4,
-        fill: 'var(--series-1)', stroke: 'var(--surface)', 'stroke-width': 2 }));
-    }
-    card.appendChild(svg);
 
     const st = document.createElement('div');
     st.className = 'spark-status';
@@ -570,17 +683,76 @@ function renderSparks(data) {
       dot.textContent = grade.icon;
       const tx = document.createElement('span');
       // 检验量也写出来：光看比率不知道它建立在多少件上
-      tx.textContent = g.lowSample
-        ? `${grade.text}（仅 ${g.qty} 件，样本不足）`
-        : `${grade.text} · ${g.qty.toLocaleString('zh-CN')} 件`;
+      tx.textContent = t.lowSample
+        ? `${grade.text}（仅 ${t.qty} 件，样本不足）`
+        : `${grade.text} · ${t.qty.toLocaleString('zh-CN')} 件`;
       st.append(dot, tx);
     } else {
       st.textContent = '无数据';
     }
     card.appendChild(st);
 
+    // 各卡目标线不同，必须逐卡写出来 —— 否则三条虚线高度不一，
+    // 读者会以为是数据在动
+    const tg = document.createElement('div');
+    tg.className = 'spark-target';
+    tg.textContent = `目标 ${target}%`
+      + (t.noDenomDefect ? ` · ${t.noDenomDefect} 件不良当天无日报，未计入` : '');
+    card.appendChild(tg);
+
     box.appendChild(card);
   });
+}
+
+function buildSpark(t, target, lo, hi, data, cur, grade) {
+  const W = 240, H = 56, padT = 6, padB = 6;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img',
+    'aria-label': `${t.name}${t.metricLabel || '一次合格率'}趋势，`
+                  + `区间 ${cur === null ? '无数据' : cur.toFixed(t.decimals || 1) + '%'}`
+                  + `${grade ? '，' + grade.text : ''}，目标 ${target}%` });
+  const x = i => t.spark.length === 1 ? W / 2 : i * W / (t.spark.length - 1);
+  // 定标排除了小样本点，个别点会落到轴外 —— 夹回画布内，否则会画到卡片外面去。
+  // 夹过的点仍然画成空心，读者知道它不可信，具体数值在表格视图里
+  const y = v => {
+    const raw = padT + (H - padT - padB) - (v - lo) / (hi - lo) * (H - padT - padB);
+    return Math.max(padT, Math.min(H - padB, raw));
+  };
+  const weakAt = i => {
+    // 服务端算好的：流水按**环节**判小样本，其余按当日总量。
+    // 实测有「当天流水共 186 件、但电检只做了 15 件」把直通率拉到 43.78%
+    // 的日子，按总量判它是达标样本，那个点会被实心画出来
+    if (t.sparkThin) return Boolean(t.sparkThin[i]);
+    const q = (t.sparkQty || [])[i];
+    return q !== undefined && q > 0 && q < data.minSample;
+  };
+
+  // 小图里也保留目标线，否则读者没有判断高低的锚点
+  svg.appendChild(el('line', { x1: 0, x2: W, y1: y(target), y2: y(target),
+    stroke: 'var(--warning)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4', opacity: .75 }));
+
+  for (let i = 1; i < t.spark.length; i++) {
+    if (typeof t.spark[i] !== 'number' || typeof t.spark[i - 1] !== 'number') continue;
+    svg.appendChild(el('path', {
+      d: `M${x(i - 1)},${y(t.spark[i - 1])} L${x(i)},${y(t.spark[i])}`,
+      fill: 'none', stroke: 'var(--series-1)', 'stroke-width': 2,
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+      opacity: (weakAt(i) || weakAt(i - 1)) ? 0.35 : 1 }));
+  }
+
+  // 小样本点画空心，和主图一个规矩
+  t.spark.forEach((v, i) => {
+    if (typeof v !== 'number' || !weakAt(i)) return;
+    svg.appendChild(el('circle', { cx: x(i), cy: y(v), r: 3,
+      fill: 'var(--surface)', stroke: 'var(--series-1)', 'stroke-width': 1.5, opacity: .6 }));
+  });
+
+  const lastIdx = t.spark.reduce((b, v, i) => typeof v === 'number' ? i : b, -1);
+  if (lastIdx >= 0) {
+    svg.appendChild(el('circle', { cx: x(lastIdx), cy: y(t.spark[lastIdx]), r: 4,
+      fill: weakAt(lastIdx) ? 'var(--surface)' : 'var(--series-1)',
+      stroke: weakAt(lastIdx) ? 'var(--series-1)' : 'var(--surface)', 'stroke-width': 2 }));
+  }
+  return svg;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -601,18 +773,51 @@ function renderTable(data) {
         <tr><td>良品率（%）</td>${data.series.map(p => `<td${dim(p)}>${fmt(p.rate)}</td>`).join('')}</tr>
       </tbody>
     </table>
-    ${(data.groups || []).length ? `
+    ${(data.types || []).length ? `
     <table>
-      <thead><tr><th>产品</th>${days}<th>状态</th></tr></thead>
+      <thead><tr><th>生产类型</th><th>指标</th>${days}<th>区间</th><th>目标</th><th>状态</th></tr></thead>
       <tbody>
-        ${data.groups.map(g => {
-          const vals = g.spark.filter(v => typeof v === 'number');
-          const cur = vals.length ? vals[vals.length - 1] : null;
-          const gr = cur === null ? null : GRADE[gradeOf(cur, data.target)];
-          return `<tr><td>${g.name}</td>${g.spark.map(v => `<td>${fmt(v)}</td>`).join('')}<td>${gr ? gr.icon + ' ' + gr.text : '—'}</td></tr>`;
+        ${data.types.map(t => {
+          const tg = typeof t.target === 'number' ? t.target : data.target;
+          const gr = typeof t.rate === 'number' ? GRADE[gradeOf(t.rate, tg)] : null;
+          // sparse 卡片在图上没有折线，逐日值只能在这里读到 —— 这张表是它的唯一出口
+          return `<tr><td>${t.name}</td><td>${t.metricLabel || '一次合格率'}</td>${t.spark.map((v, i) => {
+            // 小样本判定用服务端给的 sparkThin：流水是按**环节**判的，
+            // 拿当日总量判会漏掉「总量 186 件但电检只有 15 件」那种日子
+            const weak = (t.sparkThin || [])[i];
+            return `<td${weak ? ' style="color:var(--ink-muted)"' : ''}>${fmt(v)}</td>`;
+          }).join('')}<td>${fmt(t.rate)}</td><td>${tg}</td><td>${gr ? gr.icon + ' ' + gr.text : '—'}</td></tr>`;
         }).join('')}
       </tbody>
-    </table>` : ''}`;
+    </table>
+    <div class="spark-target" style="margin-top:.6em">
+      淡色＝当日样本不足 ${data.minSample} 件，比率仅供参考（流水按各环节分别判定）
+    </div>` : ''}
+    ${(data.flowStages || []).length ? `
+    <table>
+      <thead><tr><th>流水环节</th><th>检验数</th><th>不良数</th><th>合格率（%）</th></tr></thead>
+      <tbody>
+        ${data.flowStages.map(s => `<tr><td>${s.label}</td>` +
+          `<td>${(s.qty || 0).toLocaleString('zh-CN')}</td><td>${(s.defect || 0).toLocaleString('zh-CN')}</td>` +
+          `<td>${fmt(s.rate)}</td></tr>`).join('')}
+        <tr><td><strong>直通率</strong></td><td colspan="2">三环节相乘</td><td><strong>${fmt(data.flowFpy)}</strong></td></tr>
+      </tbody>
+    </table>
+    <div class="spark-target" style="margin-top:.6em">
+      直通率 ＝ 电检合格率 × 装配检合格率 × 流水检合格率；互检无分母，不参与计算
+    </div>` : ''}
+    ${(data.groups || []).length ? `
+    <table>
+      <thead><tr><th>产品</th>${days}<th>区间</th><th>件数</th></tr></thead>
+      <tbody>
+        ${data.groups.map(g => `<tr><td>${g.name}</td>${g.spark.map(v => `<td>${fmt(v)}</td>`).join('')}` +
+          `<td>${fmt(g.rate)}</td><td>${(g.qty || 0).toLocaleString('zh-CN')}</td></tr>`).join('')}
+      </tbody>
+    </table>
+    <div class="spark-target" style="margin-top:.6em">
+      产品维度按检验量取前 ${data.groups.length} 位。「哪条线拖后腿」看上面的生产类型表，
+      这张回答的是「哪个机型不良多」
+    </div>` : ''}`;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -624,16 +829,27 @@ function render(data) {
   document.getElementById('range').textContent = data.range || '';
   document.getElementById('trendSub').textContent =
     `${data.series.length} 天 · 按日（数据源只到天，没有更细的粒度）`;
+  const typeCount = (data.types || []).length;
+  const sparse = (data.types || []).filter(t => t.mode === 'sparse').length;
+  // 考核表的公式是「当月合格数量/总数量」，这里是 N 天滚动窗口 ——
+  // 跨月时两个数不一样，不写明会被当成考核数往上报
   document.getElementById('groupSub').textContent =
-    `按检验量取前 ${(data.groups || []).length} 位 · 共用同一纵轴，形状可直接互比`;
+    `${typeCount} 个类型 · 共用同一纵轴，形状可直接互比 · 目标线为季度 KPI`
+    + (sparse ? `（其中 ${sparse} 个样本不足，只给区间值不画趋势）` : '')
+    + ` · 区间为滚动 ${data.series.length} 天，考核按当月累计，两者不等价`;
   document.getElementById('rateLabel').textContent =
     s.latestDate ? `${s.latestDate} 良品率` : '最新一日良品率';
 
   if (typeof s.rate === 'number') {
-    const g = GRADE[gradeOf(s.rate, data.target)];
     document.getElementById('figRate').textContent = s.rate.toFixed(1);
-    document.getElementById('figStatus').innerHTML =
-      `<span style="color:${g.color}">${g.icon}</span><span>${g.text}（目标 ${data.target}%）</span>`;
+    // 顶部这个数是全厂合计（接口 5 全量，1 − 不良数 ÷ 检验数），**不是考核指标**：
+    // 考核表的质量类是四条线各自的一次合格率/直通率，没有全厂这一档，
+    // 而且四条线口径互不相同，合起来的数本就不该拿一条推算线打红绿灯。
+    // 以前这里显示「达标/未达标（目标 96.5%）」，是个假的红绿灯。
+    document.getElementById('figStatus').innerHTML = data.targetIsKpi === false
+      ? `<span>全厂合计 · 非考核指标（各线 KPI 见下方卡片）</span>`
+      : (() => { const g = GRADE[gradeOf(s.rate, data.target)];
+          return `<span style="color:${g.color}">${g.icon}</span><span>${g.text}（目标 ${data.target}%）</span>`; })();
   } else {
     document.getElementById('figRate').textContent = '--';
     document.getElementById('figStatus').textContent = '当日无检验数据';
@@ -658,7 +874,7 @@ function render(data) {
 
   renderTrend(data);
   renderDefects(data);
-  renderSparks(data);
+  renderTypes(data);
   renderTable(data);
 
   // 分子分母不同源的风险要显式暴露，不能静默地错

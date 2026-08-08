@@ -62,11 +62,54 @@ const DEFAULTS = {
   userCode:  '',
   password:  '',
   days:      14,        // 趋势图显示最近多少天
-  target:    98.5,      // 良品率目标线
+  // 全厂合计良品率的参考线。**它不是 KPI** —— 品质部考核表里质量类只有
+  // 下面 targets 那四项，没有「全厂合计」这一档。这个数是「近 3 个月 7 日
+  // 滚动良品率的 P75，向上取到 0.5」推算的，只用来给主趋势图一把标尺，
+  // 前端不拿它做达标判定（顶部大数字标的是「非考核指标」）。
+  target:    96.5,
+  // ── 分类型目标线：季度 KPI ──────────────────────────────────
+  //
+  // 出处：品质部《考核指标》表，质量类 4 项、权重合计 40%。四个数按
+  // Q1/Q2/Q3/Q4 排，逐季递增（考核表「考核目标值」列给的是 Q1 那档，
+  // 分季度的值在备注列）。「质量周月报告工具」V1.2 的
+  // QUARTER_TARGETS_BY_RANGE（该项目 src/main.jsx:44）用的是同一组数 ——
+  // 它和本项目都是下游使用者，考核表才是源头。
+  //
+  // ⚠ 四项在考核表里全叫「**一次**合格率 / **一次**直通率」，即 first-pass：
+  //   分子只认第一次检验判出的不良，返修后合格不回冲。指标名必须带「一次」，
+  //   否则会被读成最终合格率。
+  //
+  // ⚠ 口径必须跟着数字一起搬，只搬数字会得到一条假的目标线：
+  //   流水生产  对的是**一次直通率**（电检率 × 装配检率 × 流水检率），不是良品率。
+  //             拿 90 去比良品率 95.9%，大屏会常年显示「远超目标」。
+  //             考核表这行的公式栏写的是「同质量周报数据」—— 见下方 netDefect()
+  //             的说明，本项目扣了「不计为不良数」而周报没扣，两边差约 0.6pt
+  //   组件生产  对的是组件抽检巡检单的**合格数 ÷ 检验数**，数据来自
+  //             GetComponentInspectionList，跟检验日报没关系
+  //   成品改型 / 清分机  才是 1 − 不良数 ÷ 检验数
+  //
+  // ⚠ 考核表的公式栏写的是「**当月**合格数量/总数量」，而看板默认 14 天窗口。
+  //   跨月时看板的数和考核的数不是一回事，大屏上已注明。
+  //
+  // 兼容：这里也接受一个标量（如 96.5），表示四个季度用同一个数。
+  //
+  // 键必须是 OA「检验类型」字段的原值，改了就查不到表。屏上显示的名字
+  // 走下面的 TYPE_LABELS。
+  targets: {
+    '流水生产': [87,   88,   90,   92  ],   // 一次直通率，不是良品率
+    '成品改型': [94,   95,   96,   98  ],
+    '清分机':   [86,   89,   92,   95  ],
+    '组件生产': [99.5, 99.6, 99.7, 99.7],   // 合格数 ÷ 检验数
+  },
   // 实测日检验量在 98 ~ 751 之间（单条 1~166），200 这个阈值会把一半的
   // 日子误标成「样本不足」。降到 50，接入后按实际检验量再调
   minSample: 50,
-  topGroups: 6,         // 小倍数显示前几个产品
+  // 趋势图纵轴的硬地板：不管数据多好，纵轴一律画到这里，
+  // 「离 90 还有多远」在图上就是同一把尺子。低于此值的日期标红。
+  // 与 target 是两回事 —— target 是想达到的线（会随工序调），
+  // 这个是不该跌破的线，跌破了必须一眼看见
+  rateFloor: 90,
+  topGroups: 6,         // 表格视图里产品维度显示前几个
   refreshMs: 300000,    // 向 OA 取数的间隔，默认 5 分钟
 };
 
@@ -85,7 +128,12 @@ function envOverrides() {
 function loadConfig() {
   let raw = {};
   try {
-    raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    // 去掉 UTF-8 BOM 再 parse。JSON.parse 遇到 BOM 直接抛 SyntaxError，
+    // 而 Windows 上很容易写出带 BOM 的文件（PowerShell 的
+    // `Out-File -Encoding utf8` 在 5.1 里就默认加 BOM）。README 又明确
+    // 让人「直接编辑 config.json」—— 踩中的结果是服务照常启动、
+    // 看板显示「没配账号」，而账号明明填得好好的。实测踩过一次。
+    raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8').replace(/^﻿/, ''));
   } catch (err) {
     if (err.code === 'ENOENT') {
       // 文件不存在是正常情况（首次部署、或全用环境变量），不该报警
@@ -99,7 +147,16 @@ function loadConfig() {
       console.warn('config.json 读取失败，用默认值：', err.message);
     }
   }
-  return { ...DEFAULTS, ...raw, ...envOverrides() };
+  return merged(raw);
+}
+
+// targets 是嵌套对象，浅合并会让 config.json 里只写一个类型就把其余类型的
+// 默认目标全抹掉 —— 那三张卡会静默地退回全厂目标线，且没有任何提示。
+// 单独把它合一层。
+function merged(raw) {
+  const out = { ...DEFAULTS, ...raw, ...envOverrides() };
+  out.targets = { ...DEFAULTS.targets, ...(raw && raw.targets) };
+  return out;
 }
 
 let cfg = loadConfig();
@@ -107,10 +164,12 @@ let cfg = loadConfig();
 // 写回时保留文件里已有的其它设置（days / target / 注释字段等），只覆盖传进来的键
 function saveConfig(patch) {
   let raw = {};
-  try { raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch { /* 首次创建 */ }
+  // 这里也要去 BOM：读失败会被当成「首次创建」，把文件里已有的
+  // days / target / targets 全部悄悄丢掉
+  try { raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8').replace(/^﻿/, '')); } catch { /* 首次创建 */ }
   const next = { ...raw, ...patch };
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + '\n', 'utf8');
-  cfg = { ...DEFAULTS, ...next };
+  cfg = merged(next);
   cache = null; cacheAt = 0;        // 换了账号，旧缓存作废
 }
 
@@ -139,6 +198,77 @@ const FIELDS = {
   // 这两个用来诊断分子分母的记录集合对不对得齐
   type:        ['检验类型', 'InspectionType', 'inspectionType'],
   position:    ['检出位置', 'DetectPosition', 'detectPosition'],
+
+  // ── 接口 4 的「不计为不良」──────────────────────────────────
+  // 质量周月报告工具的 README 第 63 行写的是「问题分类包含『不计入不良』
+  // 的异常不计入不良数」，它的实现（main.jsx:287）也确实在查问题分类。
+  // 但 2026-08-07 实测近 90 天 939 条异常，问题分类只有 6 个取值
+  // （物料/设计/装配/工艺/误判漏检/空），**一条「不计入不良」都没有** ——
+  // 那条规则在真实数据上是死代码。
+  //
+  // 真正在起作用的是接口 4 里一个文档没提的数值字段「不计为不良数」：
+  // 近 90 天 40 条非零、合计 151 件，全落在流水生产上（+0.60pt）。
+  // 所以两条都实现：数值字段为主，问题分类为辅，哪天录入规范改了都不会漏。
+  notCounted:  ['不计为不良数', 'NotCountedQty', 'notCountedQty'],
+  category:    ['问题分类', 'ProblemCategory', 'problemCategory'],
+
+  // ── 接口 66 组件抽检巡检单列表 ───────────────────────────────
+  // 字段名于 2026-08-07 实测确认，与接口文档一致
+  compMethod:  ['检验方式'],
+  compDate:    ['抽检巡检时间'],
+  compQty:     ['检验数'],
+  compQual:    ['合格数'],
+  compDefect:  ['不良数'],
+  compModel:   ['组件型号'],
+  compName:    ['组件名称'],
+};
+
+// 「不计为不良」的净不良数。两条规则叠加：
+//   ① 问题分类含「不计入不良」→ 整条不计（README 第 63 行的字面规则）
+//   ② 扣掉「不计为不良数」字段（真实数据里唯一在起作用的那条）
+// 夹到 0 以上：实测有「不良 1 / 不计为不良 1」整条抵消的记录，
+// 万一哪天不计为不良数填得比不良数还大，负数会把良品率算到 100% 以上。
+//
+// ⚠ 未决：这条口径和考核不一致。品质部考核表里「流水一次直通率」的公式栏
+//   写的是「同质量周报数据」，即以周报的数为准；而报告工具 V1.2 的
+//   isExcludedDefect 只查问题分类（真实数据里恒为 false），**没有扣**规则 ②
+//   那 151 件 —— 它们近 90 天全落在流水生产上。结果是本项目算出来的流水
+//   比周报高约 0.60pt，而考核认周报那个数。
+//   两条路，都得品质部拍板：① 认可本项目的修正，同步改 V1.2；
+//   ② 大屏跟周报走（即去掉规则 ②，明知多算 151 件也照算）。
+//   在拍板之前保留现状（扣），因为多算不良数比少算更保守。
+function netDefect(row) {
+  if (String(pick(row, FIELDS.category) ?? '').includes('不计入不良')) return 0;
+  return Math.max(num(pick(row, FIELDS.defectAbn)) - num(pick(row, FIELDS.notCounted)), 0);
+}
+
+// 组件的不良数：接口自带的「不良数」字段不可信 —— 实测近 90 天 1807 条里
+// 有 2 条对不上（如 ID=19214 检验 1 / 合格 0 / 不良 0），字段合计 12 件而
+// 检验数−合格数 合计 17 件。报告工具 main.jsx:283 也是这么兜的。
+function compDefectOf(row) {
+  return Math.max(
+    num(pick(row, FIELDS.compDefect)),
+    num(pick(row, FIELDS.compQty)) - num(pick(row, FIELDS.compQual)),
+    0,
+  );
+}
+
+// ── 流水三环节 ───────────────────────────────────────────────
+// 匹配规则照抄质量周月报告工具 main.jsx:423-427，连「流水检」要排掉
+// 电检/装检/装配 的那个否定条件一起。判定串是「检验类型 + 检出位置」，
+// 因为异常侧的环节信息经常只写在检出位置里（README 第 68 行）。
+const FLOW_STAGES = [
+  { id: 'electrical', label: '电检',   matches: v => v.includes('电检') },
+  { id: 'assembly',   label: '装配检', matches: v => v.includes('装检') || v.includes('装配') },
+  { id: 'line',       label: '流水检', matches: v => v.includes('流水检') ||
+      (v.includes('流水') && !v.includes('电检') && !v.includes('装检') && !v.includes('装配')) },
+];
+const stageKey = row => `${pick(row, FIELDS.type) ?? ''} ${pick(row, FIELDS.position) ?? ''}`;
+
+// 互检没有分母，不参与任何合格率（README 第 62 行），直通率同理
+const isMutual = row => {
+  const t = String(pick(row, FIELDS.type) ?? '');
+  return `${t} ${pick(row, FIELDS.position) ?? ''}`.includes('互检') || t.includes('其他生产');
 };
 
 function pick(row, names) {
@@ -193,8 +323,68 @@ async function callOA(endpoint, startDate, endDate, creds = cfg) {
       throw new Error(`${endpoint} 返回 code=${body.code}：${body.message || '无错误信息'}`);
     }
     if (Array.isArray(body.data)) return body.data;
+    // 接口 66 是分页的：data 不是数组而是 {total,page,pageSize,list}
+    if (Array.isArray(body.data?.list)) return body.data.list;
   }
   throw new Error(`${endpoint} 返回结构无法识别：${JSON.stringify(body).slice(0, 200)}`);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 接口 66「组件抽检巡检单列表」
+//
+// 跟接口 4/5 三处不一样，所以不能复用 callOA：
+//   ① POST + JSON body，不是 GET + query string
+//   ② data 是 {total,page,pageSize,list}，不是数组
+//   ③ 要翻页，pageSize 上限 500
+// 实测近 14 天 499 条、近 90 天 2871 条 —— 14 天窗口一页就够，
+// 但量是会长的，按 total 翻到底。
+//
+// 组件为什么要单独走一个接口：它压根不填检验日报。趋势图 README 里
+// 「组件生产为什么没有检验日报」那条待确认项，答案就是这个 —— 组件的
+// 分母在这张单子上，不在接口 5 里。
+// ═══════════════════════════════════════════════════════════════
+async function callComponentOA(startDate, endDate, creds = cfg) {
+  const url = `${cfg.baseUrl}/GetComponentInspectionList`;
+  const safe = `${url}（${startDate} ~ ${endDate}）`;
+  const out = [];
+  let page = 1;
+
+  while (true) {
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8', Accept: 'application/json' },
+        // 密码在 body 里，所以这个对象绝不能进日志或报错
+        body: JSON.stringify({
+          userCode: creds.userCode, password: creds.password,
+          startDate, endDate, page, pageSize: 500,
+        }),
+      });
+    } catch (err) {
+      throw new Error(`连不上 OA（${safe}）：${err.message}`);
+    }
+    if (!res.ok) throw new Error(`GetComponentInspectionList HTTP ${res.status} — ${safe}`);
+
+    const body = await res.json();
+    if (Number(body?.code) !== 0) {
+      throw new Error(`GetComponentInspectionList 返回 code=${body?.code}：${body?.message || '无错误信息'}`);
+    }
+    const list = body?.data?.list;
+    if (!Array.isArray(list)) {
+      throw new Error(`GetComponentInspectionList 返回结构无法识别：${JSON.stringify(body).slice(0, 200)}`);
+    }
+    out.push(...list);
+
+    const total = Number(body?.data?.total ?? out.length);
+    if (!list.length || out.length >= total) break;
+    // 兜底：total 万一是错的，别把 OA 打爆 —— 接口文档明确要求避免影响 OA 服务
+    if (++page > 40) {
+      console.warn(`⚠ 组件接口翻到第 40 页仍未取完（total=${total}），先用已取到的 ${out.length} 条`);
+      break;
+    }
+  }
+  return out;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -209,9 +399,60 @@ function buildRange(days) {
   return { startDate: ymd(start), endDate: ymd(end), allDays: list };
 }
 
-function aggregate(daily, abnormal, allDays) {
+// ── 季度 KPI 取值 ─────────────────────────────────────────────
+// 质量周月报告工具是按周期（周/月）落季度（main.jsx:240 targetRateForPeriod），
+// 趋势图是按日 —— 同一套逻辑，粒度换成天。
+// 兼容 config.json 里写成标量的老写法（四个季度同一个数）。
+function quarterOf(day) {
+  const m = Number(String(day).slice(5, 7));
+  return Number.isFinite(m) ? Math.min(3, Math.max(0, Math.floor((m - 1) / 3))) : 0;
+}
+function targetFor(key, day) {
+  const t = cfg.targets && cfg.targets[key];
+  if (Array.isArray(t)) {
+    const v = t[quarterOf(day)];
+    return typeof v === 'number' ? v : cfg.target;
+  }
+  return typeof t === 'number' ? t : cfg.target;
+}
+
+// OA「检验类型」的原值 → 屏上显示的名字。只影响显示：目标线查表、
+// 分组聚合一律走原值。加这一层是因为考核表里写的是「硬币清分机」，
+// 而 OA 里录的是「清分机」—— 大屏上的名字跟考核表对不上，
+// 班组长就没法把屏上的数和自己的考核指标对起来。
+const TYPE_LABELS = {
+  '清分机': '硬币清分机',
+};
+const labelOf = key => TYPE_LABELS[key] || key;
+
+// 指标名。考核表四项全是「一次」口径（first-pass），少了这两个字
+// 会被读成最终合格率 —— 两个指标标错了，会误导所有看的人。
+const METRIC_LABELS = {
+  fpy:   '一次直通率',   // 流水：电检率 × 装配检率 × 流水检率
+  pass:  '一次合格率',   // 组件：合格数 ÷ 检验数
+  yield: '一次合格率',   // 改型 / 清分机：1 − 不良数 ÷ 检验数
+};
+
+function aggregate(daily, abnormal, component, allDays) {
   const byDay = new Map(allDays.map(d => [d, { qty: 0, defect: 0, crossDefect: 0 }]));
   const byProduct = new Map();
+  const byType = new Map();
+
+  // 「检验类型」是看板的主分组维度：流水生产 / 成品改型 / 清分机 / 组件生产。
+  // 选它而不是产品代码，是因为**两个接口都有这个字段**，分子分母能对齐；
+  // 而且它回答的正是班组长真正要问的那句「哪条线拖的后腿」——
+  // 产品代码回答的是「哪个机型不良多」，那是品质工程师的问题，不是他的。
+  const typeOf = row => String(pick(row, FIELDS.type) ?? '').trim() || '未标注';
+
+  const touchType = key => {
+    if (!byType.has(key)) {
+      byType.set(key, {
+        key, qty: 0, defect: 0,
+        byDay: new Map(allDays.map(d => [d, { qty: 0, defect: 0 }])),
+      });
+    }
+    return byType.get(key);
+  };
 
   const touchProduct = (code, label) => {
     if (!byProduct.has(code)) {
@@ -240,6 +481,10 @@ function aggregate(daily, abnormal, allDays) {
     byDay.get(day).qty += qty;
     byDay.get(day).crossDefect += num(pick(row, FIELDS.defectDaily));
 
+    const T = touchType(typeOf(row));
+    T.qty += qty;
+    T.byDay.get(day).qty += qty;
+
     const code = String(pick(row, FIELDS.product) ?? '未标注');
     const p = touchProduct(code, pick(row, FIELDS.stockClass));
     p.qty += qty;
@@ -248,16 +493,22 @@ function aggregate(daily, abnormal, allDays) {
 
   // 分子：接口 4 检验异常录入
   let abnDefect = 0;
+  let notCountedTotal = 0;      // 被「不计为不良」扣掉的件数，体检里要报出来
   for (const row of abnormal) {
     const day = toDay(pick(row, FIELDS.date));
     if (!day || !byDay.has(day)) continue;
-    const def = num(pick(row, FIELDS.defectAbn));
+    const def = netDefect(row);
+    notCountedTotal += num(pick(row, FIELDS.defectAbn)) - def;
     byDay.get(day).defect += def;
     abnDefect += def;
 
     // 这条不良所在的检验环节，分母那边根本没有对应记录 → 记下来
     const combo = comboOf(row);
     if (def > 0 && !denomCombos.has(combo)) orphan.set(combo, (orphan.get(combo) || 0) + def);
+
+    const T = touchType(typeOf(row));
+    T.defect += def;
+    T.byDay.get(day).defect += def;
 
     const code = String(pick(row, FIELDS.product) ?? '未标注');
     const p = touchProduct(code, pick(row, FIELDS.stockClass));
@@ -279,7 +530,211 @@ function aggregate(daily, abnormal, allDays) {
     };
   });
 
-  // 小倍数：按检验量取前 N 个产品
+  // ── 小倍数：按检验类型 ───────────────────────────────────────
+  //
+  // 三件事在这里决定，每件都有实测依据（近 90 天）：
+  //
+  // 1. **没有分母的类型不给卡片。** 组件生产 6 个月只有 1 条异常记录、
+  //    3 件不良，分母一条都没有 —— 给它一张卡，那张卡永远是空的，
+  //    大屏上常年挂个「无数据」比不挂更糟。它归进口径提示条。
+  //
+  // 2. **样本撑不起趋势的类型不画折线。** 清分机日均只有 7 件，远低于
+  //    minSample。实测它的 7 日滚动率在 -57% ~ 100% 之间乱跳，画成折线
+  //    是在把噪声当信号卖。这类改成 mode:'sparse'，前端只画散点不连线 ——
+  //    点是实测到的事实，线是我们编出来的。
+  //
+  // 3. **当天日报一条都没有、异常却记了不良的日子要单独记账。** 实测
+  //    流水 6 天 54 件、改型 5 天 12 件、清分机 5 天 32 件。这些不良
+  //    没有分母可配，会被静默地排除在所有比率之外，必须报出来。
+  const median = arr => {
+    if (!arr.length) return 0;
+    const s = [...arr].sort((a, b) => a - b);
+    const m = s.length >> 1;
+    return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
+  };
+  const lastDay = allDays[allDays.length - 1];
+
+  // ── 流水直通率 ───────────────────────────────────────────────
+  //
+  // 流水的 KPI 对的是**直通率**，不是良品率（README 第 66 行，实现见
+  // 质量周月报告工具 main.jsx:506-509）。这是这次改动里最容易出错的一处：
+  // 直接把季度 KPI 90 配到良品率 95.9% 上，大屏会常年显示「远超目标」，
+  // 而真实的直通率是 84.9% —— 差 5.1pt，方向正好反过来。
+  //
+  // 三环节任一环节当天没有检验量，当天就算不出直通率，留空不连线。
+  // **不套用报告工具 V1.2 那条「检验量和不良数均为 0 时按 100.00% 计算」**
+  // —— 那条只用在机型直通率的表格里。日粒度下套它，某环节当天没排产
+  // 就会被当成 100% 合格，直通率被系统性抬高，这比留空糟得多。
+  //
+  // 实测（2026-08-07，近 90 天）：62/90 天能算，缺的绝大多数是周日
+  // —— 那天不生产，不是漏数据。
+  const isFlowType = k => k.includes('流水') || k.includes('电检') || k.includes('装检') || k.includes('装配');
+  const flowDay = new Map(allDays.map(d =>
+    [d, Object.fromEntries(FLOW_STAGES.map(s => [s.id, { qty: 0, defect: 0 }]))]));
+  const flowSum = Object.fromEntries(FLOW_STAGES.map(s => [s.id, { qty: 0, defect: 0 }]));
+
+  for (const row of daily) {
+    if (!isFlowType(typeOf(row)) || isMutual(row)) continue;
+    const day = toDay(pick(row, FIELDS.date));
+    if (!day || !flowDay.has(day)) continue;
+    const k = stageKey(row), q = num(pick(row, FIELDS.qty));
+    for (const s of FLOW_STAGES) if (s.matches(k)) { flowDay.get(day)[s.id].qty += q; flowSum[s.id].qty += q; }
+  }
+  for (const row of abnormal) {
+    if (!isFlowType(typeOf(row)) || isMutual(row)) continue;
+    const day = toDay(pick(row, FIELDS.date));
+    if (!day || !flowDay.has(day)) continue;
+    const k = stageKey(row), d = netDefect(row);
+    for (const s of FLOW_STAGES) if (s.matches(k)) { flowDay.get(day)[s.id].defect += d; flowSum[s.id].defect += d; }
+  }
+
+  // 三个环节的率相乘。任一环节无分母 → null（当天不画点）
+  const fpyOf = cell => {
+    const rates = FLOW_STAGES.map(s => cell[s.id].qty > 0 ? 1 - cell[s.id].defect / cell[s.id].qty : null);
+    if (rates.some(r => r === null)) return null;
+    return +(rates.reduce((a, b) => a * b, 1) * 100).toFixed(1);
+  };
+  // 小样本要按**环节**判，不能按当日总量判：实测有「当天流水共 186 件、
+  // 但电检只做了 15 件」的日子，直通率被拉到 43.78%。按总量判它是达标样本，
+  // 按环节判才看得出那个点不可信。近 90 天 24/62 天属于这种。
+  const flowThinDay = d => FLOW_STAGES.some(s => {
+    const c = flowDay.get(d)[s.id];
+    return c.qty > 0 && c.qty < cfg.minSample;
+  });
+  const flowStages = FLOW_STAGES.map(s => ({
+    id: s.id, label: s.label,
+    qty: flowSum[s.id].qty, defect: flowSum[s.id].defect,
+    rate: rateOf(flowSum[s.id].qty, flowSum[s.id].defect),
+  }));
+  const flowFpy = fpyOf(flowSum);
+
+  const types = [];
+  const typeOrphans = [];
+  for (const T of byType.values()) {
+    const active = allDays.filter(d => T.byDay.get(d).qty > 0);
+    // 有不良、但整个区间一条分母都没有 → 算不出率，不给卡片
+    if (!active.length) {
+      if (T.defect > 0) typeOrphans.push({ name: T.key, defect: T.defect });
+      continue;
+    }
+    const enough = active.filter(d => T.byDay.get(d).qty >= cfg.minSample).length;
+    const flow = isFlowType(T.key);
+    // 直通率能算出来的日子；流水的趋势线走这个，不走良品率
+    const fpyDays = flow ? allDays.filter(d => fpyOf(flowDay.get(d)) !== null) : [];
+
+    types.push({
+      // 显示名（硬币清分机等），聚合和查表用的仍是 T.key
+      name: labelOf(T.key),
+      qty: T.qty,
+      defect: T.defect,
+      // 流水这张卡的主数字是一次直通率，其余类型是一次合格率。metric 让
+      // 前端知道该把标题写成哪个 —— README 说得很清楚：两个指标标错了，
+      // 会误导所有看的人。
+      metric: flow ? 'fpy' : 'yield',
+      metricLabel: flow ? METRIC_LABELS.fpy : METRIC_LABELS.yield,
+      // 大数字用整个区间的累计率，不是最后一天的 —— 面板标题写的是多少天，
+      // 数字就得是多少天的
+      rate: flow ? flowFpy : rateOf(T.qty, T.defect),
+      // 流水的良品率没有丢，降到副信息 —— 它仍然是「这条线坏了多少件」
+      // 最直观的读法，只是不再是对标 KPI 的那个数
+      yieldRate: rateOf(T.qty, T.defect),
+      stages: flow ? flowStages : undefined,
+      target: targetFor(T.key, lastDay),
+      // 季度 KPI 会翻页。14 天窗口跨季度时目标线要走阶梯，否则跨过 9/30
+      // 那天，达标判定会整体错一档
+      targetSpark: allDays.map(d => targetFor(T.key, d)),
+      // 多数有数据的日子都够样本，才配画趋势线
+      mode: flow
+        ? (fpyDays.length / Math.max(active.length, 1) >= 0.6 ? 'daily' : 'sparse')
+        : (enough / active.length >= 0.6 ? 'daily' : 'sparse'),
+      activeDays: active.length,
+      medianQty: median(active.map(d => T.byDay.get(d).qty)),
+      spark: flow
+        ? allDays.map(d => fpyOf(flowDay.get(d)))
+        : allDays.map(d => rateOf(T.byDay.get(d).qty, T.byDay.get(d).defect)),
+      sparkQty: allDays.map(d => T.byDay.get(d).qty),
+      // 哪些天的点不可信（流水按环节判，其余按当日总量判），前端画空心
+      sparkThin: allDays.map(d => flow
+        ? flowThinDay(d)
+        : (T.byDay.get(d).qty > 0 && T.byDay.get(d).qty < cfg.minSample)),
+      // 当天没有任何检验记录、却录了不良的件数
+      noDenomDefect: allDays.reduce((s, d) => {
+        const c = T.byDay.get(d);
+        return s + (c.qty === 0 ? c.defect : 0);
+      }, 0),
+      lowSample: T.qty < cfg.minSample,
+    });
+  }
+
+  // ── 组件生产：走接口 66，跟检验日报无关 ──────────────────────
+  //
+  // 组件不填检验日报（趋势图 README 那条「组件生产为什么没有检验日报」
+  // 的待确认项，答案就是这个），它的分母在组件抽检巡检单上。
+  // 口径照 质量周月报告工具 README 第 60 行：只统计「检验方式」含「组件」
+  // 的记录，合格率 = 合格数 ÷ 检验数，按「抽检巡检时间」的日期归集。
+  //
+  // 实测（近 14 天 499 条）检验方式有 6 种：组件抽检/组件首检/组件全检/
+  // 组件巡检 计入，流水巡检/成品首检 不计入 —— 后两种是这张单子上顺带
+  // 记的别的工序，混进来会把组件的分母灌大。
+  if (component && component.length) {
+    const key = '组件生产';
+    const byDayC = new Map(allDays.map(d => [d, { qty: 0, qual: 0, defect: 0 }]));
+    let qty = 0, qual = 0, defect = 0, skipped = 0;
+    for (const row of component) {
+      if (!String(pick(row, FIELDS.compMethod) ?? '').includes('组件')) { skipped += 1; continue; }
+      const day = toDay(pick(row, FIELDS.compDate));
+      if (!day || !byDayC.has(day)) continue;
+      const q = num(pick(row, FIELDS.compQty));
+      const g = num(pick(row, FIELDS.compQual));
+      const d = compDefectOf(row);
+      const c = byDayC.get(day);
+      c.qty += q; c.qual += g; c.defect += d;
+      qty += q; qual += g; defect += d;
+    }
+    if (qty > 0) {
+      // 组件保留两位小数，其余类型一位。不是不统一 —— 组件的 KPI 是 99.7，
+      // 实测值常年在 99.9 以上，一位小数会把 99.97% 显示成 100%，
+      // 那天明明有 1 件不良，屏上却是个满分。质量周月报告工具 V1.1
+      // 「统一良率保留两位小数」也是同一个理由。
+      const passOf = c => c.qty > 0 ? +(c.qual / c.qty * 100).toFixed(2) : null;
+      const active = allDays.filter(d => byDayC.get(d).qty > 0);
+      types.push({
+        name: labelOf(key),
+        qty, defect,
+        metric: 'pass',
+        metricLabel: METRIC_LABELS.pass,
+        // 合格数 ÷ 检验数，不是 1 − 不良数 ÷ 检验数：实测两者差 5 件
+        // （近 90 天 1807 条里 2 条对不上），以合格数为准
+        rate: +(qual / qty * 100).toFixed(2),
+        decimals: 2,
+        qualified: qual,
+        target: targetFor(key, lastDay),
+        targetSpark: allDays.map(d => targetFor(key, d)),
+        mode: active.length / Math.max(allDays.length - 1, 1) >= 0.6 ? 'daily' : 'sparse',
+        activeDays: active.length,
+        medianQty: median(active.map(d => byDayC.get(d).qty)),
+        spark:    allDays.map(d => passOf(byDayC.get(d))),
+        sparkQty: allDays.map(d => byDayC.get(d).qty),
+        sparkThin: allDays.map(d => {
+          const c = byDayC.get(d);
+          return c.qty > 0 && c.qty < cfg.minSample;
+        }),
+        noDenomDefect: 0,
+        lowSample: qty < cfg.minSample,
+        source: '组件抽检巡检单',
+        skippedRows: skipped,
+      });
+      // 接口 4 里那几件「组件生产」不良，现在有分母了，不该再报成孤儿
+      for (let i = typeOrphans.length - 1; i >= 0; i--) {
+        if (typeOrphans[i].name.includes('组件')) typeOrphans.splice(i, 1);
+      }
+    }
+  }
+
+  types.sort((a, b) => b.qty - a.qty);
+
+  // 表格视图仍保留产品维度：按检验类型分组回答「哪条线」，
+  // 按产品代码分组回答「哪个机型」—— 后者信息没丢，只是从主视觉降到表格里
   const groups = [...byProduct.values()]
     .filter(p => p.qty > 0)
     .sort((a, b) => b.qty - a.qty)
@@ -311,12 +766,19 @@ function aggregate(daily, abnormal, allDays) {
   const orphanList = [...orphan.entries()].sort((a, b) => b[1] - a[1]);
 
   return {
-    series, groups,
+    series, types, groups,
+    flowStages,
+    flowFpy,
     audit: {
       dailyOwnDefect,                                        // 日报自己填的不良合计
       abnormalDefect: abnDefect,                             // 当前分子
+      notCountedDefect: notCountedTotal,                     // 被「不计为不良」扣掉的
       orphanDefect: orphanList.reduce((s, [, v]) => s + v, 0),
       orphanCombos: orphanList.slice(0, 5).map(([k, v]) => `${k} → ${v} 件`),
+      // 整个类型都没有分母（如「组件生产」），连一张卡片都撑不起来
+      orphanTypes: typeOrphans.sort((a, b) => b.defect - a.defect),
+      // 有分母的类型里，落在「当天日报一条没有」的那些日子上的不良
+      noDenomDefect: types.reduce((s, t) => s + t.noDenomDefect, 0),
     },
   };
 }
@@ -335,20 +797,43 @@ function aggregate(daily, abnormal, allDays) {
 // 所以体检报这个数，不报那个虚的百分点差。
 // ═══════════════════════════════════════════════════════════════
 function auditRatio(audit, totalQty) {
-  const { orphanDefect, orphanCombos, abnormalDefect, dailyOwnDefect } = audit;
+  const { orphanDefect, orphanCombos, abnormalDefect, dailyOwnDefect,
+          orphanTypes, noDenomDefect, notCountedDefect } = audit;
   const pct = totalQty > 0 ? +(orphanDefect / totalQty * 100).toFixed(2) : 0;
-  const ok = orphanDefect === 0;
+  const ok = orphanDefect === 0 && !orphanTypes.length && !noDenomDefect;
+
+  // 三种「有分子没分母」分开说，因为该找的人不一样：
+  //   环节对不上 → 检出位置的写法不统一，找录入规范
+  //   整类无分母 → 这条线根本没做检验日报，找那条线的班组长
+  //   当天无日报 → 日报漏填或补录延迟，找当天的检验员
+  const parts = [];
+  if (orphanDefect > 0) {
+    parts.push(`分子里有 ${orphanDefect} 件不良（占分母 ${pct}%）来自分母未覆盖的检验环节：${orphanCombos.join('；')}`);
+  }
+  if (orphanTypes && orphanTypes.length) {
+    parts.push(`${orphanTypes.map(t => `「${t.name}」${t.defect} 件`).join('、')}整个区间没有任何检验日报，` +
+               '算不出良品率，已不单独列卡片');
+  }
+  if (noDenomDefect > 0) {
+    parts.push(`另有 ${noDenomDefect} 件不良落在「当天日报一条都没有」的日子上，这些不良不计入任何比率`);
+  }
+
   return {
     ...audit,
     orphanPct: pct,
     ok,
     note: ok
       ? '分子的检验环节都能在分母里找到对应记录'
-      : `分子里有 ${orphanDefect} 件不良（占分母 ${pct}%）来自分母未覆盖的检验环节，` +
-        `这部分有分子没分母，会把良品率算低：${orphanCombos.join('；')}`,
+      : parts.join('。') + '。以上都会把良品率算低。',
     hint: dailyOwnDefect < abnormalDefect * 0.6
       ? `另注：日报自带的「不良数量」只有 ${dailyOwnDefect} 件，远少于异常录入的 ${abnormalDefect} 件，` +
         '说明日报那个字段基本没人填 —— 用异常录入当分子是对的。'
+      : null,
+    // 这条跟上面几条性质不同：不是数据缺陷，是**有意排除**，会把良品率算高。
+    // 排除动作本身不该是隐形的，否则看板上的数跟 OA 里的原始不良数对不上，
+    // 而没人知道差在哪
+    notCountedNote: notCountedDefect > 0
+      ? `已按「不计为不良数」字段扣除 ${notCountedDefect} 件不良，未计入良品率。`
       : null,
   };
 }
@@ -365,14 +850,21 @@ let inflight = null;
 
 async function fetchQuality() {
   const { startDate, endDate, allDays } = buildRange(cfg.days);
-  const [daily, abnormal] = await Promise.all([
+  const [daily, abnormal, component] = await Promise.all([
     callOA('InspectionDailyReportList', startDate, endDate),   // 分母
     callOA('ProductionInspectionList', startDate, endDate),    // 分子
+    // 组件走它自己的单子。这一路失败不能拖垮整块看板 —— 大屏是无人值守的，
+    // 少一张组件卡片总比整屏报错强，所以单独 catch，把失败降级成一条提示。
+    callComponentOA(startDate, endDate).catch(err => {
+      console.warn(`⚠ 组件抽检巡检单读取失败，本次不出组件卡片：${err.message}`);
+      return null;
+    }),
   ]);
 
   if (!daily.length) throw new Error(`检验日报列表在 ${startDate} ~ ${endDate} 没有数据`);
 
-  const { series, groups, audit } = aggregate(daily, abnormal, allDays);
+  const { series, types, groups, flowStages, flowFpy, audit } =
+    aggregate(daily, abnormal, component, allDays);
 
   const withData = series.filter(s => s.output > 0);
   const latest = withData[withData.length - 1] || null;
@@ -384,7 +876,12 @@ async function fetchQuality() {
     updatedAt: new Date().toISOString(),
     range: `${startDate} ~ ${endDate}`,
     target: cfg.target,
+    // 全厂合计那条线在考核表里没有对应档位（质量类只有四项，见 DEFAULTS.target）。
+    // 前端据此把它画成「参考」而不是「目标」，顶部大数字也不做达标判定 ——
+    // 拿一条推算线去给一个混合口径的数打红绿灯，红绿灯本身就是假的。
+    targetIsKpi: false,
     minSample: cfg.minSample,
+    rateFloor: cfg.rateFloor,
     summary: {
       rate: latest ? latest.rate : null,
       defect: latest ? latest.defect : 0,
@@ -396,9 +893,18 @@ async function fetchQuality() {
       latestDate: latest ? latest.date : null,
     },
     series,
-    groups,
+    types,          // 小倍数主视觉：按检验类型（流水生产 / 成品改型 / 清分机 / 组件生产）
+    groups,         // 表格视图备查：按产品代码
+    // 流水直通率的三个环节，给表格视图和「哪个环节拖后腿」用。
+    // 实测电检是瓶颈：合格率最低，检验量还不到另两个环节的一半
+    flowStages,
+    flowFpy,
     crossCheck: auditRatio(audit, totalQty),
-    counts: { 日报记录: daily.length, 异常记录: abnormal.length },
+    counts: {
+      日报记录: daily.length,
+      异常记录: abnormal.length,
+      组件记录: component ? component.length : 0,
+    },
   };
 }
 
@@ -502,6 +1008,31 @@ async function probe() {
     }
     console.log();
   }
+
+  // 组件走 POST + 分页，跟上面两个不是一套，单独探
+  try {
+    const rows = await callComponentOA(from, today);
+    console.log(`── 接口66 组件抽检巡检单列表（GetComponentInspectionList）: ${rows.length} 条`);
+    if (rows.length) {
+      console.log('   真实字段名：', Object.keys(rows[0]).join(', '));
+      // 检验方式决定哪些记录计入组件合格率（只要含「组件」的），
+      // 这张单子上还混着流水巡检、成品首检 —— 分布不对时这里最先看出来
+      const methods = new Map();
+      for (const r of rows) {
+        const m = String(pick(r, FIELDS.compMethod) ?? '(空)');
+        methods.set(m, (methods.get(m) || 0) + 1);
+      }
+      console.log('   检验方式分布：');
+      for (const [m, n] of [...methods].sort((a, b) => b[1] - a[1])) {
+        console.log(`     ${m}  ${n} 条  ${m.includes('组件') ? '← 计入' : '← 不计入（检验方式不含「组件」）'}`);
+      }
+      console.log('   第一条：', JSON.stringify(rows[0], null, 2).replace(/\n/g, '\n   '));
+    }
+  } catch (err) {
+    console.log(`── 接口66 组件抽检巡检单列表失败：${err.message}`);
+  }
+  console.log();
+
   console.log('把上面的真实字段名对照 server.js 里的 FIELDS 表，对不上就补进去。');
 }
 
