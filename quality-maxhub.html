@@ -221,6 +221,8 @@
 
   /* 页码圆点：让人知道「还有几页」「等多久轮回来」。
      没有这个，轮播在观众眼里就是屏幕自己在乱跳 */
+  /* 这里的 gap 只是让圆点和翻页按钮别贴死；老内核忽略掉也不影响用，
+     letter-spacing 本身已经把圆点撑开了 */
   .dots { margin-left: auto; font-size: 1rem; color: var(--ink-muted); letter-spacing: .35em;
           display: flex; align-items: center; gap: .1em; }
   .dots .on { color: var(--ink); }
@@ -324,11 +326,20 @@
   }
   .modal .mbtn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
   .modal .mbtn:disabled { opacity: .5; }
+  /* flex 的 gap 要 Chrome 84+，而这块屏的 WebView 版本是未知数
+     （minSdk 21，只知道 fetch 能用所以至少 42）。老内核上 gap 会被整个
+     忽略，按钮就挤成一坨。用 margin 兜底，gap 支持时再把 margin 抵掉 */
   .modal-bar { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
+  .modal-bar > * { margin-left: .8rem; }
+  .modal-bar > :first-child { margin-left: 0; }
+  @supports (gap: 1rem) { .modal-bar > * { margin-left: 0; } }
   .modal-bar .grow { margin-left: auto; }
   .modal-msg { font-size: 1rem; min-height: 1.5em; margin-bottom: .5rem; }
   .modal-msg.err { color: var(--critical); }
   .yearbar { display: flex; align-items: center; gap: .7rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .yearbar > * { margin-left: .7rem; }
+  .yearbar > :first-child { margin-left: 0; }
+  @supports (gap: 1rem) { .yearbar > * { margin-left: 0; } }
 
   /* 这里原来有一组链接样式，服务的是页脚那个「配置 OA 账号」入口。
      入口去掉之后整个页面一个 <a> 都没有了 —— 大屏是只读看板，本来也不该有
