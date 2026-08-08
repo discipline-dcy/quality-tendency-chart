@@ -12,6 +12,8 @@
  *   GET  /api/config   当前配置状态（只回账号名，绝不回密码）
  *   POST /api/login    验证并保存 OA 账号
  *   POST /api/logout   清除已保存的 OA 账号
+ *   GET  /api/targets  各年各类型的季度目标线
+ *   POST /api/targets  改目标线（整体替换，写回 config.json，立刻生效）
  *
  * 数据来源（口径由需求方指定）：
  *   分子 ← 接口 4「检验异常录入列表」ProductionInspectionList  的不良数
@@ -1342,6 +1344,103 @@ function readBody(req, limit = 4096) {
   });
 }
 
+// ── 目标线的读写 ─────────────────────────────────────────────
+//
+// 放在服务端而不是让人去编 config.json，是因为改目标线是**每年都要做一次**
+// 的常规动作（考核表一年一发），而编 JSON 每次都可能少个逗号、打成中文引号。
+// 这类会周期性重复的操作，值得给它一个改不坏的入口。
+//
+// 只开在电脑版看板上，大屏没有这个按钮 —— 这条沿用项目已有的决定
+// （commit 5ec0ea2「大屏去掉 OA 配置入口」）：车间墙上那块屏无人值守，
+// 谁路过都能碰，KPI 不该在那儿改。
+
+// 允许的类型键。取默认表的键 ∪ 配置里已有的键 —— 后者让人加过的自定义
+// 类型也能继续编辑，不会一保存就被判非法
+function knownTypeKeys() {
+  const keys = new Set(Object.keys(DEFAULTS.targets[2026] || {}));
+  for (const y of Object.keys(cfg.targets || {})) {
+    for (const k of Object.keys(cfg.targets[y] || {})) keys.add(k);
+  }
+  return [...keys];
+}
+
+// 一条目标线的四个季度值。接受数组、标量、null（＝该季度不设）
+function normalizeQuarters(v) {
+  const one = x => {
+    if (x === null || x === undefined || x === '') return null;
+    const n = Number(x);
+    // 上界 100 是硬的：合格率不可能超过 100%。下界不设 0 是因为 0 本身
+    // 没意义，但允许 null 表示「这个季度不设目标」
+    if (!Number.isFinite(n) || n <= 0 || n > 100) throw new Error('目标值要在 0~100 之间：' + x);
+    return Math.round(n * 100) / 100;      // 最多两位小数，和组件那张卡对齐
+  };
+  if (Array.isArray(v)) {
+    if (v.length !== 4) throw new Error('每个类型要给四个季度的值，收到 ' + v.length + ' 个');
+    return v.map(one);
+  }
+  return one(v);
+}
+
+function validateTargets(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('targets 要是一个对象');
+  const known = knownTypeKeys();
+  const out = {};
+  const years = Object.keys(raw);
+  if (!years.length) throw new Error('至少要留一个年份');
+  for (const y of years) {
+    if (!/^\d{4}$/.test(y)) throw new Error('年份要是四位数字：' + y);
+    const yn = Number(y);
+    if (yn < 2000 || yn > 2100) throw new Error('年份超出合理范围：' + y);
+    const row = raw[y];
+    if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error(y + ' 那一档要是一个对象');
+    out[y] = {};
+    for (const k of Object.keys(row)) {
+      if (known.indexOf(k) < 0) throw new Error('不认识的检验类型「' + k + '」');
+      const q = normalizeQuarters(row[k]);
+      // 整行留空 = 这个类型今年不设目标。这里必须写成显式的
+      // [null,null,null,null]，**不能"跳过不写"** —— 合并是
+      // {...默认, ...配置}，跳过等于没覆盖，DEFAULTS 里那一行会原样冒回来，
+      // 表现就是"清空保存后目标线又回来了"
+      out[y][k] = (q === null) ? [null, null, null, null] : q;
+    }
+  }
+  return out;
+}
+
+function handleGetTargets(res) {
+  return sendJSON(res, 200, {
+    targets: cfg.targets || {},
+    // 键是 OA 的原值，屏上显示的是另一套名字 —— 两个都给前端，
+    // 让人看到的是「硬币清分机」，存回来的仍是「清分机」
+    types: knownTypeKeys().map(k => ({ key: k, label: labelOf(k) })),
+    currentYear: String(new Date().getFullYear()),
+  });
+}
+
+// ⚠ 这是**整体替换**，不是逐条合并：请求里没带的年份/类型会退回代码里的
+//    出厂默认值。前端每次提交全量（所有年份 × 所有类型，没填的写 null），
+//    所以 config.json 里存的就是屏上看到的。手工调这个接口时要注意 ——
+//    只发改动的那一条，别的会被打回默认值。
+async function handleSaveTargets(req, res) {
+  let body;
+  try { body = await readBody(req, 8192); }
+  catch (err) { return sendJSON(res, 400, { error: err.message }); }
+
+  let clean;
+  try { clean = validateTargets(body.targets); }
+  catch (err) { return sendJSON(res, 400, { error: err.message }); }
+
+  try {
+    // saveConfig 会顺手重算 cfg 并清掉取数缓存，所以保存完下一次
+    // /api/quality 立刻是新目标线，不用等 5 分钟的缓存过期，也不用重启
+    saveConfig({ targets: clean });
+  } catch (err) {
+    return sendJSON(res, 500, { error: '写入 config.json 失败：' + err.message });
+  }
+  console.log('目标线已更新：' + Object.keys(clean).join('、'));
+  return sendJSON(res, 200, { ok: true, targets: cfg.targets });
+}
+
 async function handleLogin(req, res) {
   let body;
   try { body = await readBody(req); }
@@ -1474,6 +1573,10 @@ function serve() {
     if (req.method === 'POST' && url === '/api/login')  return handleLogin(req, res);
     if (req.method === 'POST' && url === '/api/verify') return handleVerify(req, res);
     if (req.method === 'POST' && url === '/api/logout') return handleLogout(req, res);
+    if (url === '/api/targets') {
+      if (req.method === 'POST') return handleSaveTargets(req, res);
+      return handleGetTargets(res);
+    }
 
     // 只回账号名和配置状态，密码绝不出服务端
     if (url === '/api/config') {

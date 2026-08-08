@@ -55,6 +55,56 @@
     color: var(--ink-2);
   }
 
+  /* ── 目标线设置 ────────────────────────────────────────
+     改目标线是每年都要做一次的常规动作（考核表一年一发），
+     让人去编 config.json 每次都可能少个逗号、打成中文引号。
+     会周期性重复的操作，值得给它一个改不坏的入口。
+     只在电脑版上有，大屏没有 —— 见 README「为什么大屏上没有这个按钮」 */
+  .btn {
+    font: inherit; font-size: clamp(12px, 1vw, 15px);
+    padding: .4em .9em; border-radius: 6px; cursor: pointer;
+    background: var(--surface); color: var(--ink-2);
+    border: 1px solid var(--grid);
+  }
+  .btn:hover { color: var(--ink); border-color: var(--ink-muted); }
+  .btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .btn.primary:hover { opacity: .88; }
+  .btn:disabled { opacity: .5; cursor: default; }
+
+  .modal-back {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    display: none; align-items: center; justify-content: center; z-index: 50; padding: 24px;
+  }
+  .modal-back.show { display: flex; }
+  .modal {
+    background: var(--bg); border: 1px solid var(--grid); border-radius: 10px;
+    padding: 22px 24px; max-width: 780px; width: 100%;
+    max-height: 88vh; overflow: auto; box-shadow: 0 18px 48px rgba(0,0,0,.5);
+  }
+  .modal h2 { margin: 0 0 .3em; font-size: 1.25em; font-weight: 600; }
+  .modal .hint { color: var(--ink-muted); font-size: .85em; line-height: 1.7; margin: 0 0 1em; }
+  .modal table { width: 100%; border-collapse: collapse; margin-bottom: 1em; }
+  .modal th, .modal td { padding: .45em .5em; text-align: center; border-bottom: 1px solid var(--grid); }
+  .modal th:first-child, .modal td:first-child { text-align: left; white-space: nowrap; }
+  .modal input {
+    width: 5.2em; font: inherit; text-align: center; padding: .3em;
+    background: var(--surface); color: var(--ink);
+    border: 1px solid var(--grid); border-radius: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .modal input:focus { outline: none; border-color: var(--ink-muted); }
+  .modal input.bad { border-color: var(--critical); color: var(--critical); }
+  .modal .rowlab { color: var(--ink-2); }
+  .modal .metric { color: var(--ink-muted); font-size: .82em; margin-left: .4em; }
+  .modal-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .modal-bar .grow { margin-left: auto; }
+  .modal-msg { font-size: .85em; min-height: 1.4em; }
+  .modal-msg.err { color: var(--critical); }
+  .modal-msg.ok  { color: var(--good); }
+  .yearbar { display: flex; align-items: center; gap: 8px; margin-bottom: .9em; flex-wrap: wrap; }
+  .yearbar select { font: inherit; padding: .3em .5em; background: var(--surface);
+                    color: var(--ink); border: 1px solid var(--grid); border-radius: 4px; }
+
   /* ── 提示条：数据连接异常 / 口径对不上 ─────────────────── */
   .banner {
     display: none;
@@ -214,8 +264,39 @@
   <header>
     <h1>质量趋势</h1>
     <span class="range" id="range">—</span>
+    <button type="button" class="btn" id="btnTargets">目标线设置</button>
     <span class="clock" id="clock">--:--:--</span>
   </header>
+
+  <!-- 目标线设置弹窗。表格由 JS 按当前配置生成 —— 类型不是写死的四个，
+       config.json 里加过别的类型也要能编 -->
+  <div class="modal-back" id="targetModal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tmTitle">
+      <h2 id="tmTitle">目标线设置</h2>
+      <p class="hint">
+        值来自品质部《考核指标》表，一年一发，所以按年分档。四个数依次是
+        Q1 / Q2 / Q3 / Q4。留空＝该季度不设目标，屏上显示「目标未设」、不判达标。<br>
+        保存后立刻生效，不用重启服务；大屏最多 60 秒后自己刷成新值。
+      </p>
+      <div class="yearbar">
+        <label for="tmYear">年份</label>
+        <select id="tmYear"></select>
+        <button type="button" class="btn" id="tmAddYear">＋ 加一年</button>
+        <span class="metric" id="tmYearNote"></span>
+      </div>
+      <table>
+        <thead><tr><th>生产类型</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th></tr></thead>
+        <tbody id="tmRows"></tbody>
+      </table>
+      <div class="modal-msg" id="tmMsg"></div>
+      <div class="modal-bar">
+        <span class="metric" id="tmFile">写入 config.json</span>
+        <span class="grow"></span>
+        <button type="button" class="btn" id="tmCancel">取消</button>
+        <button type="button" class="btn primary" id="tmSave">保存</button>
+      </div>
+    </div>
+  </div>
 
   <div class="banner err"  id="bannerErr"></div>
   <div class="banner warn" id="bannerWarn"></div>
@@ -984,6 +1065,9 @@ if (location.protocol === 'file:') {
   for (const a of document.querySelectorAll('a[href="/setup"]')) {
     a.href = 'http://localhost:3200/setup';
   }
+  // 双击打开时没有后端，目标线存不回去。藏掉按钮，别给一个点了只会报错的入口
+  const bt = document.getElementById('btnTargets');
+  if (bt) bt.style.display = 'none';
 }
 
 function tickClock() {
@@ -991,6 +1075,172 @@ function tickClock() {
 }
 tickClock();
 setInterval(tickClock, 1000);
+
+// ═══════════════════════════════════════════════════════════════
+// 目标线设置弹窗
+//
+// 改目标线是每年都要做一次的常规动作（考核表一年一发），原来只能去编
+// config.json —— 少个逗号、打成中文引号都会让服务静默退回默认值。
+// 这类会周期性重复的操作值得给它一个改不坏的入口。
+//
+// 编辑的是「草稿」而不是直接改后端：改到一半反悔、或者填错了一个格子，
+// 都不该已经把线上的目标线弄乱。点保存才整体提交。
+// ═══════════════════════════════════════════════════════════════
+const TM = {
+  el:   id => document.getElementById(id),
+  draft: null,      // { '2026': { '流水生产': [..4个..] } }，字符串形式，允许中途为空
+  types: [],        // [{key,label}]
+  year: null,
+};
+
+function tmOpen() {
+  TM.el('tmMsg').textContent = '';
+  TM.el('tmMsg').className = 'modal-msg';
+  // 相对路径：电脑版一律通过服务打开，跟 /api/quality 用同一套写法
+  fetch('/api/targets', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(d => {
+      TM.types = d.types || [];
+      TM.draft = {};
+      // 深拷贝成字符串：input 的值本来就是字符串，统一了才好比对「改没改过」
+      for (const y of Object.keys(d.targets || {})) {
+        TM.draft[y] = {};
+        for (const k of Object.keys(d.targets[y])) {
+          const v = d.targets[y][k];
+          const arr = Array.isArray(v) ? v : [v, v, v, v];
+          TM.draft[y][k] = arr.map(x => (x === null || x === undefined) ? '' : String(x));
+        }
+      }
+      // 优先停在今年那一档；今年还没配就先建一个空的，省得人再点「加一年」
+      const cur = d.currentYear;
+      if (!TM.draft[cur]) TM.draft[cur] = {};
+      TM.year = cur;
+      tmRenderYears();
+      tmRenderRows();
+      TM.el('targetModal').classList.add('show');
+    })
+    .catch(err => {
+      TM.el('targetModal').classList.add('show');
+      tmSay('读不到目标线：' + err.message + '（服务没起来？）', 'err');
+    });
+}
+
+function tmClose() { TM.el('targetModal').classList.remove('show'); }
+
+function tmSay(msg, kind) {
+  const m = TM.el('tmMsg');
+  m.textContent = msg || '';
+  m.className = 'modal-msg' + (kind ? ' ' + kind : '');
+}
+
+function tmRenderYears() {
+  const sel = TM.el('tmYear');
+  const years = Object.keys(TM.draft).sort();
+  sel.innerHTML = years.map(y =>
+    `<option value="${y}"${y === TM.year ? ' selected' : ''}>${y} 年</option>`).join('');
+  const thisYear = String(new Date().getFullYear());
+  const next = String(new Date().getFullYear() + 1);
+  TM.el('tmYearNote').textContent =
+    TM.year === thisYear ? '（今年，屏上现在用的就是这一档）'
+    : TM.year > thisYear ? '（未来年份，到那年 1 月 1 日自动启用）'
+    : '（往年，只影响回溯更早日期的窗口）';
+  if (!TM.draft[next]) TM.el('tmAddYear').textContent = '＋ 加 ' + next + ' 年';
+  else TM.el('tmAddYear').textContent = '＋ 加一年';
+}
+
+function tmRenderRows() {
+  const rows = TM.draft[TM.year] || {};
+  // 指标名跟卡片上写的一致，否则「99.7 是哪个指标的线」得靠猜
+  const metricOf = k => k.indexOf('流水') >= 0 ? '一次直通率' : '一次合格率';
+  TM.el('tmRows').innerHTML = TM.types.map(t => {
+    const v = rows[t.key] || ['', '', '', ''];
+    const cells = [0, 1, 2, 3].map(i =>
+      `<td><input type="number" step="0.1" min="0" max="100" data-k="${t.key}" data-q="${i}"
+         value="${v[i] == null ? '' : v[i]}" aria-label="${t.label} 第 ${i + 1} 季度"></td>`).join('');
+    return `<tr><td class="rowlab">${t.label}<span class="metric">${metricOf(t.key)}</span></td>${cells}</tr>`;
+  }).join('');
+}
+
+// 每敲一下就存进草稿。不等保存才收集，是因为切年份时当前页的输入会被
+// 整体重建，不随手存就丢了
+function tmBindRows() {
+  TM.el('tmRows').addEventListener('input', ev => {
+    const el = ev.target;
+    if (!el.dataset || !el.dataset.k) return;
+    const k = el.dataset.k, q = Number(el.dataset.q);
+    if (!TM.draft[TM.year]) TM.draft[TM.year] = {};
+    if (!TM.draft[TM.year][k]) TM.draft[TM.year][k] = ['', '', '', ''];
+    TM.draft[TM.year][k][q] = el.value.trim();
+    const n = Number(el.value);
+    const bad = el.value !== '' && (!isFinite(n) || n <= 0 || n > 100);
+    el.classList.toggle('bad', bad);
+    tmSay('');
+  });
+}
+
+function tmSave() {
+  // 发**全量**：所有年份 × 所有类型，没填的写成 null。
+  //
+  // 接口是整体替换 targets，不是逐条合并 —— 只发改动的那几条，没发的会退回
+  // 代码里的出厂默认值，表现就是「我明明把清分机改成 85 了，保存完又变回 86」。
+  // 全量提交还有个好处：config.json 里存的就是屏上看到的，不用心算哪些在
+  // 走默认值。
+  const payload = {};
+  for (const y of Object.keys(TM.draft)) {
+    payload[y] = {};
+    for (const t of TM.types) {
+      const arr = (TM.draft[y] && TM.draft[y][t.key]) || ['', '', '', ''];
+      // 空串 → null（该季度不设目标）。整行都空也照样提交，
+      // 后端存成显式的 null，那才是「这一年不设这条线」
+      payload[y][t.key] = arr.map(s => (s === '' || s === null) ? null : Number(s));
+    }
+  }
+  const btn = TM.el('tmSave');
+  btn.disabled = true;
+  tmSay('保存中…');
+  fetch('/api/targets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targets: payload }),
+  })
+    .then(r => r.json().then(b => ({ ok: r.ok, b })))
+    .then(({ ok, b }) => {
+      if (!ok) throw new Error(b.error || '保存失败');
+      tmClose();
+      load();          // 立刻按新目标线重画，不用等下一次 60 秒轮询
+    })
+    .catch(err => tmSay(err.message, 'err'))
+    .then(() => { btn.disabled = false; });
+}
+
+(function tmInit() {
+  const back = TM.el('targetModal');
+  if (!back) return;
+  TM.el('btnTargets').addEventListener('click', tmOpen);
+  TM.el('tmCancel').addEventListener('click', tmClose);
+  TM.el('tmSave').addEventListener('click', tmSave);
+  TM.el('tmYear').addEventListener('change', ev => {
+    TM.year = ev.target.value;
+    tmRenderYears(); tmRenderRows(); tmSay('');
+  });
+  TM.el('tmAddYear').addEventListener('click', () => {
+    // 从已有的最大年份往后加一年，而不是固定「明年」——
+    // 已经配到 2028 的话，再点应该给 2029
+    const years = Object.keys(TM.draft).sort();
+    const base = Math.max(new Date().getFullYear(), Number(years[years.length - 1] || 0));
+    const y = String(base + 1);
+    if (!TM.draft[y]) TM.draft[y] = {};
+    TM.year = y;
+    tmRenderYears(); tmRenderRows();
+    tmSay('新的一年默认是空的，填完保存。留空的季度屏上会显示「目标未设」。');
+  });
+  // 点遮罩空白处关掉；点弹窗内部不关
+  back.addEventListener('click', ev => { if (ev.target === back) tmClose(); });
+  document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape' && back.classList.contains('show')) tmClose();
+  });
+  tmBindRows();
+})();
 
 load();
 setInterval(load, 60000);   // 数据源是按日的，没必要 3 秒一刷
