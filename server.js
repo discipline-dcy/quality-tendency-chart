@@ -247,6 +247,14 @@ const FIELDS = {
   type:        ['检验类型', 'InspectionType', 'inspectionType'],
   position:    ['检出位置', 'DetectPosition', 'detectPosition'],
 
+  // ── 返修相关，只给 --probe 用，不进比率 ──────────────────────
+  // 用来回答「我们算的到底是一次合格率还是最终合格率」：
+  // 如果一条异常已经修完（维修完成时间非空）而它的不良数仍然 > 0，
+  // 说明返修不回冲原记录 —— 那我们算的就是一次合格率，和考核表的叫法一致。
+  repairDone:  ['维修完成时间', 'RepairFinishTime', 'repairFinishTime', '维修完成日期'],
+  repairAct:   ['维修措施', 'RepairAction', 'repairAction'],
+  machineSn:   ['机器SN', '机器SN号', 'MachineSN', 'machineSn'],
+
   // ── 接口 4 的「不计为不良」──────────────────────────────────
   // 质量周月报告工具的 README 第 63 行写的是「问题分类包含『不计入不良』
   // 的异常不计入不良数」，它的实现（main.jsx:287）也确实在查问题分类。
@@ -277,14 +285,16 @@ const FIELDS = {
 // 夹到 0 以上：实测有「不良 1 / 不计为不良 1」整条抵消的记录，
 // 万一哪天不计为不良数填得比不良数还大，负数会把良品率算到 100% 以上。
 //
-// ⚠ 未决：这条口径和考核不一致。品质部考核表里「流水一次直通率」的公式栏
-//   写的是「同质量周报数据」，即以周报的数为准；而报告工具 V1.2 的
-//   isExcludedDefect 只查问题分类（真实数据里恒为 false），**没有扣**规则 ②
-//   那 151 件 —— 它们近 90 天全落在流水生产上。结果是本项目算出来的流水
-//   比周报高约 0.60pt，而考核认周报那个数。
-//   两条路，都得品质部拍板：① 认可本项目的修正，同步改 V1.2；
-//   ② 大屏跟周报走（即去掉规则 ②，明知多算 151 件也照算）。
-//   在拍板之前保留现状（扣），因为多算不良数比少算更保守。
+// ✅ 已定（2026-08-08，需求方）：**不计入不良的，不算。** 两条规则都保留。
+//
+//   遗留的是另一头：报告工具 V1.2 的 isExcludedDefect 只查问题分类
+//   （真实数据里恒为 false），**没有扣**规则 ② 那 151 件 —— 它们近 90 天
+//   全落在流水生产上。所以本项目算出来的流水直通率比周报**高约 0.60pt**。
+//   而考核表「流水一次直通率」的公式栏写的是「同质量周报数据」。
+//
+//   口径以本项目为准（已拍板），差异出在 V1.2 那边没扣。要两边对上，
+//   该改的是 V1.2，不是这里。在 V1.2 改之前，大屏和周报的流水数字会差
+//   0.6 个点左右 —— 有人问起就是这个原因。
 function netDefect(row) {
   if (String(pick(row, FIELDS.category) ?? '').includes('不计入不良')) return 0;
   return Math.max(num(pick(row, FIELDS.defectAbn)) - num(pick(row, FIELDS.notCounted)), 0);
@@ -1127,6 +1137,57 @@ async function setAccount() {
 // ═══════════════════════════════════════════════════════════════
 // --probe：把真实字段名打出来
 // ═══════════════════════════════════════════════════════════════
+// 「一次合格率还是最终合格率」—— 这个问题不用去问人，数据自己能答。
+//
+// 接口 4 有「维修措施 / 维修人 / 维修完成时间」，说明确实存在返修流程。
+// 那台机器修好之后，OA 里原来那条异常记录会怎么样？两种可能，结论完全相反：
+//
+//   A. 记录不动，不良数仍是 1  → 返修**不回冲** → 我们算的是**一次合格率** ✅
+//      和考核表「一次合格率 / 一次直通率」的叫法一致，什么都不用改。
+//
+//   B. 修好后不良数被改回 0（或整条撤掉）→ 返修**回冲** → 我们算的其实是
+//      **最终合格率** ❌ 那看板上「一次」两个字就标错了，而且数字会偏高。
+//
+// 判据：挑出「已经修完」（维修完成时间非空）的记录，看它们的不良数。
+// 仍然 > 0 就是 A。这比问人可靠 —— 问到的是流程应该怎样，数据说的是实际怎样。
+function reportFpyEvidence(rows) {
+  const done = [], undone = [];
+  for (const r of rows) {
+    const finished = String(pick(r, FIELDS.repairDone) ?? '').trim() !== '';
+    (finished ? done : undone).push(r);
+  }
+  console.log('\n   ── 一次合格率 vs 最终合格率：返修是否回冲原记录 ──');
+  if (!done.length) {
+    console.log('     本区间没有「维修完成时间」非空的记录，判不了。');
+    console.log('     把探测区间拉长些再跑（改 probe() 里的 from），或等有返修记录时再看。');
+    return;
+  }
+  const stillDefect = done.filter(r => num(pick(r, FIELDS.defectAbn)) > 0).length;
+  console.log(`     已修完的记录：${done.length} 条（未修完 ${undone.length} 条）`);
+  console.log(`     其中不良数仍 > 0 的：${stillDefect} 条`);
+  if (stillDefect === done.length) {
+    console.log('     → 返修**不回冲**原记录。我们算的是「一次合格率」，与考核表一致 ✅');
+  } else if (stillDefect === 0) {
+    console.log('     → 修完的记录不良数全被清零，返修**会回冲**。');
+    console.log('       那现在算出来的是「最终合格率」，看板上「一次」两个字是错的 ❌');
+    console.log('       需要改指标名，或者改成用「首次判定」的字段重算。');
+  } else {
+    console.log('     → 两种都有，说明录入不一致，得看具体案例。');
+    console.log('       建议拿几个机器 SN 去 OA 里翻原始记录对一下。');
+  }
+  // 同一台机器出现多次 = 同一台被判过多次不良，也是返修留下的痕迹
+  const sn = new Map();
+  for (const r of rows) {
+    const s = String(pick(r, FIELDS.machineSn) ?? '').trim();
+    if (s) sn.set(s, (sn.get(s) || 0) + 1);
+  }
+  const repeat = [...sn.values()].filter(n => n > 1).length;
+  if (sn.size) {
+    console.log(`     另：${sn.size} 台机器 SN 里有 ${repeat} 台出现多次` +
+                '（同一台被判过多次不良，通常就是返修后复检又判了）');
+  }
+}
+
 async function probe() {
   if (!configured()) {
     console.error('还没配 OA 账号。先启动服务 `node server.js`，浏览器打开 http://localhost:' + PORT + '/setup 登录一次。');
@@ -1145,6 +1206,7 @@ async function probe() {
         console.log('   真实字段名：', Object.keys(rows[0]).join(', '));
         console.log('   第一条：', JSON.stringify(rows[0], null, 2).replace(/\n/g, '\n   '));
       }
+      if (ep === 'ProductionInspectionList' && rows.length) reportFpyEvidence(rows);
     } catch (err) {
       console.log(`── ${label}（${ep}）失败：${err.message}`);
     }
