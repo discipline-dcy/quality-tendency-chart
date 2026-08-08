@@ -993,15 +993,18 @@ function auditRatio(audit, totalQty) {
     parts.push('分子分母对不齐的类型：' +
       over.map(t => `「${t.name}」${t.defect} 件，占它自己分母的 ${t.pct}%`).join('；'));
   }
+  // 下面三条是**并列**的三种成因，不是上面那句的细分 ——
+  // 早先这里写「其中…」，实测发现超线的是清分机（当天无日报 1 件）、
+  // 而环节对不上的那 1 件在流水生产，两件毫不相干的事被"其中"串成了因果
   if (orphanDefect > 0) {
-    parts.push(`其中来自分母未覆盖的检验环节的有 ${orphanDefect} 件（占全厂分母 ${pct}%）：${orphanCombos.join('；')}`);
+    parts.push(`分母未覆盖的检验环节共 ${orphanDefect} 件（占全厂分母 ${pct}%）：${orphanCombos.join('；')}`);
   }
   if (orphanTypes && orphanTypes.length) {
     parts.push(`${orphanTypes.map(t => `「${t.name}」${t.defect} 件`).join('、')}整个区间没有任何检验日报，` +
-               '算不出良品率，已不单独列卡片');
+               '算不出合格率，已不单独列卡片');
   }
   if (noDenomDefect > 0) {
-    parts.push(`另有 ${noDenomDefect} 件不良落在「当天日报一条都没有」的日子上，这些不良不计入任何比率`);
+    parts.push(`${noDenomDefect} 件不良落在「当天日报一条都没有」的日子上，这些不良不计入任何比率`);
   }
 
   return {
@@ -1022,7 +1025,7 @@ function auditRatio(audit, totalQty) {
           ? `分子分母基本对得齐（差异最大的是「${worst.name}」${worst.defect} 件，`
             + `占它自己分母的 ${worst.pct}%，在 ${AUDIT_TOLERANCE_PCT}% 的录入噪声容忍线内）`
           : '分子的检验环节都能在分母里找到对应记录')
-      : parts.join('。') + '。以上都会把良品率算低。',
+      : parts.join('。') + '。以上都会把合格率算低。',
     hint: dailyOwnDefect < abnormalDefect * 0.6
       ? `另注：日报自带的「不良数量」只有 ${dailyOwnDefect} 件，远少于异常录入的 ${abnormalDefect} 件，` +
         '说明日报那个字段基本没人填 —— 用异常录入当分子是对的。'
